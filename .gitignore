@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+__pycache__/
+monitoring/grafana/dashboards/*.json
+*.tgz

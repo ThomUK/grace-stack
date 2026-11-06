@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: grace
+    folder: ""
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false     # dashboards are code; edit the JSON and restart grafana
+    options:
+      path: /var/lib/grafana/dashboards

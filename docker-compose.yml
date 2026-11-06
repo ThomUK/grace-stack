@@ -1,0 +1,15 @@
+# grace-stack — everything that runs on grace, assembled from modules.
+#
+# Each module is a folder with its own compose.yml and config. Drop a line
+# here to leave a module out on another machine; all modules share one
+# project, one network and the .env in this directory.
+
+name: grace-stack
+
+include:
+  - path: models/compose.yml
+    env_file: .env
+  - path: apps/compose.yml
+    env_file: .env
+  - path: monitoring/compose.yml
+    env_file: .env
