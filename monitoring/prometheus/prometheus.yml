@@ -14,6 +14,8 @@ scrape_configs:
         labels: { service: vllm-qwen38 }
       - targets: [vllm-qwen36moe:8000]
         labels: { service: vllm-qwen36moe }
+      - targets: [vllm-codernext:8000]
+        labels: { service: vllm-codernext }
 
   - job_name: dcgm
     static_configs:

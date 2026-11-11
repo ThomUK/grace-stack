@@ -1,0 +1,7 @@
+[
+  {"name": "Coding",              "note": "Ornith 1.5 + Qwen3.6 MoE (the default set)", "services": ["vllm-ornith15", "vllm-qwen36moe"]},
+  {"name": "Coder-Next + Ornith", "note": "needs CODERNEXT_MODEL=NVFP4",                  "services": ["vllm-codernext", "vllm-ornith15"]},
+  {"name": "Coder-Next solo",     "note": "either quant",                                 "services": ["vllm-codernext"]},
+  {"name": "Chat",                "note": "Gemma 4 (audio in) + Ornith",                  "services": ["vllm-gemma12", "vllm-ornith15"]},
+  {"name": "All off",             "note": "free the memory",                              "services": []}
+]

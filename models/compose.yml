@@ -5,6 +5,8 @@
 #   vllm-qwen36moe : Qwen3.6-35B-A3B-NVFP4     -> 127.0.0.1:8002   coding agent (mixture of experts)
 #   vllm-ornith15  : Ornith-1.5-35B-A3B (NVFP4) -> 127.0.0.1:8003  coding agent (default; mixture of experts)
 #                    which quant is ORNITH_MODEL in .env; the served name stays `ornith-1.5-35b-a3b`
+#   vllm-codernext : Qwen3-Coder-Next (80B-A3B) -> 127.0.0.1:8004  coding agent, non-thinking; opt-in
+#                    quant + memory fraction are CODERNEXT_MODEL / CODERNEXT_GMU in .env (NVFP4 0.45, FP8 0.72)
 #
 # One memory pool. GMU fractions must sum < ~0.85.
 # Ports bind to loopback; expose with `tailscale serve`, not the LAN.
@@ -63,6 +65,23 @@ services:
       --enable-auto-tool-choice
       --tool-call-parser qwen3_xml
       --reasoning-parser qwen3
+
+  vllm-codernext:
+    <<: *vllm
+    profiles: [codernext]
+    container_name: vllm-codernext
+    ports: ["127.0.0.1:8004:8000"]
+    command: >
+      vllm serve ${CODERNEXT_MODEL:-RedHatAI/Qwen3-Coder-Next-NVFP4}
+      --served-model-name qwen3-coder-next
+      --host 0.0.0.0 --port 8000
+      --max-model-len 262144
+      --max-num-seqs 4
+      --gpu-memory-utilization ${CODERNEXT_GMU:-0.45}
+      --override-generation-config '{"temperature": 1.0, "top_p": 0.95, "top_k": 40}'
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
 
   vllm-qwen38:
     <<: *vllm

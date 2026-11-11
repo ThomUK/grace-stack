@@ -31,7 +31,7 @@ def setting(key):
 
 
 TAILNET_HOST = setting("TAILNET_HOST")
-DGX_URL = f"https://{TAILNET_HOST}:8080" if TAILNET_HOST else "http://localhost:8080"
+SWITCH_URL = f"https://{TAILNET_HOST}:8080" if TAILNET_HOST else "http://localhost:8080"
 WEBUI_URL = f"https://{TAILNET_HOST}:12000" if TAILNET_HOST else "http://localhost:12000"
 
 # ---------------------------------------------------------------- helpers
@@ -192,7 +192,7 @@ index = dashboard("grace-index", "grace — overview", [
     ts("GPU temp & power", [(GPU_TEMP, "temp °C"), (GPU_POWER, "power W")], (12, 8, 12, 8), fill=0),
 
     text("Click any tile to drill down. **[System](/d/grace-system)** · **[Containers](/d/grace-containers)** · **[Models](/d/grace-models)** · "
-         f"[DGX dashboard (start/stop)]({DGX_URL}) · [Open WebUI]({WEBUI_URL})", (0, 16, 24, 2)),
+         f"[Switchboard (start/stop models)]({SWITCH_URL}) · [Open WebUI]({WEBUI_URL})", (0, 16, 24, 2)),
 ], tags=["grace"], links=NAV[1:])
 
 # ---------------------------------------------------------------- 2. system
@@ -249,7 +249,7 @@ containers = dashboard("grace-containers", "grace — containers", [
        desc="A step up means the container restarted in the last hour."),
     ts("Network by container", [('sum by (name) (rate(container_network_receive_bytes_total{name!=""}[1m]))', "rx {{name}}"),
                                 ('sum by (name) (rate(container_network_transmit_bytes_total{name!=""}[1m]))', "tx {{name}}")], (12, 17, 12, 6), "Bps", fill=0),
-    text(f"Start / stop / restart lives on the [DGX dashboard]({DGX_URL}). "
+    text(f"Start / stop / restart lives on the [Switchboard]({SWITCH_URL}). "
          "A stopped vLLM container takes ~4 min to come back; watch it on the Models page.", (0, 23, 24, 2)),
 ], tags=["grace"], links=NAV)
 

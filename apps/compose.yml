@@ -8,21 +8,29 @@ services:
     ports: ["127.0.0.1:12000:8080"]
     environment:
       - ENABLE_OLLAMA_API=false
-      - OPENAI_API_BASE_URLS=http://vllm-gemma:8000/v1;http://vllm-ornith15:8000/v1;http://vllm-qwen36moe:8000/v1
-      - OPENAI_API_KEYS=x;x;x
+      - OPENAI_API_BASE_URLS=http://vllm-gemma12:8000/v1;http://vllm-ornith15:8000/v1;http://vllm-qwen36moe:8000/v1;http://vllm-codernext:8000/v1
+      - OPENAI_API_KEYS=x;x;x;x
     volumes:
       - open-webui:/app/backend/data
 
-  dgx-dashboard:
-    image: ghcr.io/dantup/dgx_dashboard:latest
-    container_name: dgx-dashboard
+  # Start/stop page for the vLLM services (apps/switchboard). It runs `docker compose`
+  # against this repo, mounted at the same path as on the host so compose computes the
+  # same config hashes as your shell does and never recreates a container needlessly.
+  # Run `docker compose` from the repo root: ${PWD} is what gets mounted.
+  switchboard:
+    build: ./switchboard
+    image: grace/switchboard
+    container_name: switchboard
     restart: unless-stopped
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
     ports: ["127.0.0.1:8080:8080"]   # holds the Docker socket: keep off the LAN
+    environment:
+      - STACK_DIR=${PWD}
+      - HOME=${HOME}                 # models/compose.yml mounts ${HOME}/.cache/huggingface
+      - TAILNET_HOST=${TAILNET_HOST:-}
+      - MAX_GMU=${MAX_GMU:-0.85}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${PWD}:${PWD}:ro
 
 volumes:
   open-webui:
