@@ -1,8 +1,10 @@
 # grace-stack — services on grace (ASUS Ascent GX10, GB10, 128 GB unified)
 #
-#   vllm-gemma12  : google/gemma-4-12b-it   -> 127.0.0.1:8000   general chat, audio in
-#   vllm-qwen38 : Qwen3.8-27B-FP8         -> 127.0.0.1:8001   coding agent
-#  vllm-qwen36moe : Qwen3.6-35B-A3B-NVFP4 -> 127.0.0.1:8002  coding agent (mixture of experts)
+#   vllm-gemma12   : google/gemma-4-12b-it     -> 127.0.0.1:8000   general chat, audio in
+#   vllm-qwen38    : Qwen3.8-27B-FP8           -> 127.0.0.1:8001   coding agent (dense; opt-in, was the default)
+#   vllm-qwen36moe : Qwen3.6-35B-A3B-NVFP4     -> 127.0.0.1:8002   coding agent (mixture of experts)
+#   vllm-ornith15  : Ornith-1.5-35B-A3B (NVFP4) -> 127.0.0.1:8003  coding agent (default; mixture of experts)
+#                    which quant is ORNITH_MODEL in .env; the served name stays `ornith-1.5-35b-a3b`
 #
 # One memory pool. GMU fractions must sum < ~0.85.
 # Ports bind to loopback; expose with `tailscale serve`, not the LAN.
@@ -42,6 +44,25 @@ services:
       --enable-prefix-caching
       --enable-auto-tool-choice
       --tool-call-parser gemma4
+
+  vllm-ornith15:
+    <<: *vllm
+    profiles: [ornith15]
+    container_name: vllm-ornith15
+    ports: ["127.0.0.1:8003:8000"]
+    command: >
+      vllm serve ${ORNITH_MODEL:-ornith-ai/Ornith-1.5-35B-A3B-NVFP4}
+      --served-model-name ornith-1.5-35b-a3b
+      --host 0.0.0.0 --port 8000
+      --max-model-len 262144
+      --max-num-seqs 4
+      --gpu-memory-utilization 0.30
+      --override-generation-config '{"temperature": 0.6}'
+      --enable-prefix-caching
+      --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --reasoning-parser qwen3
 
   vllm-qwen38:
     <<: *vllm

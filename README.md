@@ -18,8 +18,9 @@ and list only those in `docker-compose.yml`.
 | module     | service        | port                 | notes |
 |------------|----------------|----------------------|-------|
 | models     | vllm-gemma12   | 127.0.0.1:8000       | gemma-4-12b-it as `gemma4-12b`; profile `gemma12` |
-| models     | vllm-qwen38    | 127.0.0.1:8001       | Qwen3.8-27B-FP8 as `qwen3.8-27b`; MTP spec decode; profile `qwen38` |
-| models     | vllm-qwen36moe | 127.0.0.1:8002       | Qwen3.6-35B-A3B-NVFP4 as `qwen3.6-35b-a3b`; MTP spec decode; profile `qwen36moe` |
+| models     | vllm-qwen38    | 127.0.0.1:8001       | Qwen3.8-27B-FP8 as `qwen3.8-27b`; MTP spec decode; profile `qwen38` (opt-in) |
+| models     | vllm-qwen36moe | 127.0.0.1:8002       | Qwen3.6-35B-A3B-NVFP4 as `qwen3.6-35b-a3b`; MTP spec decode; profile `qwen36moe` (default) |
+| models     | vllm-ornith15  | 127.0.0.1:8003       | Ornith-1.5-35B-A3B NVFP4 (quant set by `ORNITH_MODEL`) as `ornith-1.5-35b-a3b`; MTP spec decode; profile `ornith15` (default) |
 | apps       | open-webui     | 127.0.0.1:12000      | data in external volume `open-webui` |
 | apps       | dgx-dashboard  | 127.0.0.1:8080       | start/stop buttons; holds the Docker socket |
 | monitoring | grafana        | 127.0.0.1:3000       | the dashboards; login from .env |
@@ -33,7 +34,7 @@ Ports on 127.0.0.1 are fronted by `tailscale serve`; a `0.0.0.0` bind on a port 
 ("address already in use"), so never give both the same port.
 
 ## Bring-up
-    cp .env.example .env && nano .env        # HF_TOKEN, GRAFANA_ADMIN_PASSWORD, TAILNET_HOST, COMPOSE_PROFILES
+    cp .env.example .env && nano .env        # HF_TOKEN, GRAFANA_ADMIN_PASSWORD, TAILNET_HOST, COMPOSE_PROFILES, ORNITH_MODEL
     chmod 600 .env
     docker volume create open-webui          # declared external, so compose won't create it
     python3 monitoring/grafana/build_dashboards.py   # dashboard JSON is generated, not committed
@@ -44,8 +45,9 @@ Ports on 127.0.0.1 are fronted by `tailscale serve`; a `0.0.0.0` bind on a port 
     sudo tailscale serve --bg --https=12000 http://127.0.0.1:12000   # Open WebUI
     sudo tailscale serve --bg --https=3000  http://127.0.0.1:3000    # Grafana
     sudo tailscale serve --bg --https=8000  http://127.0.0.1:8000    # gemma API
-    sudo tailscale serve --bg --https=8001  http://127.0.0.1:8001    # qwen38 API
+    sudo tailscale serve --bg --https=8001  http://127.0.0.1:8001    # qwen38 API (only if you run that profile)
     sudo tailscale serve --bg --https=8002  http://127.0.0.1:8002    # qwen36moe API
+    sudo tailscale serve --bg --https=8003  http://127.0.0.1:8003    # ornith15 API
     sudo tailscale serve --bg --https=8080  http://127.0.0.1:8080    # DGX dash
 
 URLs: `https://<machine>.<tailnet>.ts.net:<port>`, the name you set as `TAILNET_HOST`. HTTPS is bound to that
@@ -62,8 +64,8 @@ for most services, so every member of your tailnet can reach them:
     docker compose up -d                        # apply edits; recreates only what changed
     docker compose up -d --build                # also rebuild grace/vllm after a Dockerfile edit
     docker compose --profile gemma12 up -d      # one model profile (or set COMPOSE_PROFILES in .env)
-    docker compose stop vllm-qwen38             # free its memory; `start` reloads in ~4 min
-    docker compose logs -f vllm-qwen38          # throughput + prefix-cache hit rate every 10 s
+    docker compose stop vllm-ornith15           # free its memory; `start` reloads in ~4 min
+    docker compose logs -f vllm-ornith15        # throughput + prefix-cache hit rate every 10 s
     docker compose config                       # the fully assembled file; check paths and ${VARS}
     docker compose down                         # keeps volumes (-v wipes vllm-cache, prometheus, grafana)
 
@@ -89,7 +91,7 @@ Auth is Grafana's own login. For passwordless tailnet login instead, Grafana's a
 `Tailscale-User-Login` header that `tailscale serve` adds — only safe while Grafana stays on 127.0.0.1.
 
 ## Open WebUI
-Admin → Settings → Connections: `http://vllm-gemma12:8000/v1`, `http://vllm-qwen38:8000/v1` and
+Admin → Settings → Connections: `http://vllm-gemma12:8000/v1`, `http://vllm-ornith15:8000/v1` and
 `http://vllm-qwen36moe:8000/v1` (container port, not host mapping; key anything). Ollama API off. Saved connections in the volume override the env seeds.
 Audio: STT Whisper (Local), TTS Web API.
 
@@ -97,15 +99,15 @@ Audio: STT Whisper (Local), TTS Web API.
 Chat: Manage Language Models → `chatLanguageModels.json`:
 
     [{ "name": "Grace", "vendor": "customendpoint", "apiType": "chat-completions",
-       "models": [{ "id": "qwen3.8-27b", "name": "Qwen3.8-27b",
-                    "url": "https://<machine>.<tailnet>.ts.net:8001/v1",
-                    "toolCalling": true, "vision": false,
-                    "maxInputTokens": 131072, "maxOutputTokens": 16000,
+       "models": [{ "id": "ornith-1.5-35b-a3b", "name": "Ornith-1.5-35B-A3B",
+                    "url": "https://<machine>.<tailnet>.ts.net:8003/v1",
+                    "toolCalling": true, "vision": true,
+                    "maxInputTokens": 246144, "maxOutputTokens": 16000,
                     "thinking": true, "supportsReasoningEffort": ["low","medium","high"],
                     "reasoningEffortFormat": "chat-completions" }] }]
 
 `id` must equal `--served-model-name`. `supportsReasoningEffort` adds a Thinking Effort submenu (the > arrow in the
-model picker); whether Qwen honours it is unverified — `--default-chat-template-kwargs '{"enable_thinking": false}'`
+model picker); whether the model honours it is unverified — `--default-chat-template-kwargs '{"enable_thinking": false}'`
 on the vLLM command is the lever that certainly works. First turn on a fresh workspace is a 20–40 s prefill.
 
 ## Performance (GB10)
@@ -113,8 +115,8 @@ on the vLLM command is the lever that certainly works. First turn on a fresh wor
   ~32 with the DFlash2 drafter — which needs `TRITON_ATTN` on vLLM ≤ 0.31 (prefix-cache garbling, issue #60174).
   The Models dashboard's acceptance-rate panel says whether the drafter is earning its keep.
 - Never `--enforce-eager`: ~55% throughput loss on sm_121.
-- GMU: gemma 0.30, qwen38 0.45, qwen36moe 0.25. Keep the sum of running models under ~0.85, so not all three at
-  once; the overview Memory tile is the check.
+- GMU: gemma 0.30, ornith15 0.30, qwen36moe 0.25, qwen38 0.45. Keep the sum of running models under ~0.85, so
+  qwen38 runs with at most one of the others; the overview Memory tile is the check.
 - Tool parsers: `gemma4`, `qwen3_xml`. List: `docker compose exec vllm-gemma12 vllm serve --help=all | grep -A4 tool-call-parser`.
 
 ## Why the vLLM image is three lines
