@@ -75,13 +75,24 @@ Plain `up -d` never rebuilds an image. A changed `command:` recreates that conta
 A container that exists but lost its port mapping needs `up -d --force-recreate <service>`.
 
 ## Switchboard
-`https://<machine>.<tailnet>.ts.net:8080`: one card per vLLM service with start / stop / restart / logs, and
-presets that switch whole sets (stop what is not wanted, then start the rest). It discovers the models from
-`docker compose config`, so a new `vllm serve` service in `models/compose.yml` appears by itself; the memory
-fraction shown is the service's `--gpu-memory-utilization`. It refuses any start that would take the running
-sum above `MAX_GMU` (.env, default 0.85). Presets are `apps/switchboard/presets.json`, re-read on every page
-load, so edit and refresh. A model stopped there stays stopped across reboots (`restart: unless-stopped`),
-but a plain `docker compose up -d` starts every service in `COMPOSE_PROFILES` again.
+`https://<machine>.<tailnet>.ts.net:8080`: one card per vLLM service with start / stop / restart / logs, presets
+that switch whole sets (stop what is not wanted, then start the rest), and links to Grafana and Open WebUI.
+It discovers the models from `docker compose config`, so a new `vllm serve` service in `models/compose.yml`
+appears by itself; the memory fraction shown is the service's `--gpu-memory-utilization`. It refuses any start
+that would take the running sum above `MAX_GMU` (.env, default 0.85). A model stopped there stays stopped across
+reboots (`restart: unless-stopped`), but a plain `docker compose up -d` starts every service in `COMPOSE_PROFILES` again.
+
+Everything it knows beyond the compose file is `apps/switchboard/switchboard.json`, re-read on every request:
+- `presets`: named sets of services.
+- `variants`: per service, named `.env` assignments (which quant, which drafter). Applying one rewrites `.env`
+  (the matching commented line is uncommented, the others commented out) and, if the service is running,
+  recreates it with the new command; if the new memory fraction would not fit beside what is running, `.env` is
+  reverted and nothing moves. `.env` is the only path mounted read-write for this.
+- `vscode`: overrides for the generated VS Code model entry on each card. Defaults come from the command line
+  (`toolCalling` from `--enable-auto-tool-choice`, `thinking` from `--reasoning-parser`, `vision` from
+  `--limit-mm-per-prompt`, `maxInputTokens` = `--max-model-len` minus 16000). Set `vision: true` for a
+  multimodal model that has no explicit flag.
+- `links`: the header links; `{host}` is `TAILNET_HOST`.
 
 The container runs `docker compose` against this repo, bind-mounted at the same absolute path as on the host.
 That keeps compose's config hashes identical to your shell's, so neither side recreates containers the other
@@ -111,7 +122,7 @@ Admin → Settings → Connections: `http://vllm-gemma12:8000/v1`, `http://vllm-
 Audio: STT Whisper (Local), TTS Web API.
 
 ## VS Code
-Chat: Manage Language Models → `chatLanguageModels.json`:
+Chat: Manage Language Models → `chatLanguageModels.json`. Each switchboard card has a copy button for this; by hand:
 
     [{ "name": "Grace", "vendor": "customendpoint", "apiType": "chat-completions",
        "models": [{ "id": "ornith-1.5-35b-a3b", "name": "Ornith-1.5-35B-A3B",
