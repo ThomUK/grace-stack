@@ -18,7 +18,7 @@ and list only those in `docker-compose.yml`.
 | module     | service        | port                 | notes |
 |------------|----------------|----------------------|-------|
 | models     | vllm-gemma12   | 127.0.0.1:8000       | gemma-4-12b-it as `gemma4-12b`; profile `gemma12` |
-| models     | vllm-qwen38    | 127.0.0.1:8001       | Qwen3.8-27B-FP8 as `qwen3.8-27b`; MTP spec decode; profile `qwen38` (opt-in) |
+| models     | vllm-qwen38    | 127.0.0.1:8001       | Qwen3.8-27B NVFP4 or FP8 (`QWEN38_MODEL`/`QWEN38_GMU`) as `qwen3.8-27b`; MTP spec decode; profile `qwen38` (opt-in) |
 | models     | vllm-qwen36moe | 127.0.0.1:8002       | Qwen3.6-35B-A3B-NVFP4 as `qwen3.6-35b-a3b`; MTP spec decode; profile `qwen36moe` (default) |
 | models     | vllm-ornith15  | 127.0.0.1:8003       | Ornith-1.5-35B-A3B NVFP4 (quant set by `ORNITH_MODEL`) as `ornith-1.5-35b-a3b`; MTP spec decode; profile `ornith15` (default) |
 | models     | vllm-codernext | 127.0.0.1:8004       | Qwen3-Coder-Next 80B-A3B (quant + GMU set by `CODERNEXT_MODEL`/`CODERNEXT_GMU`) as `qwen3-coder-next`; non-thinking; profile `codernext` (opt-in) |
@@ -142,9 +142,9 @@ on the vLLM command is the lever that certainly works. First turn on a fresh wor
   ~32 with the DFlash2 drafter — which needs `TRITON_ATTN` on vLLM ≤ 0.31 (prefix-cache garbling, issue #60174).
   The Models dashboard's acceptance-rate panel says whether the drafter is earning its keep.
 - Never `--enforce-eager`: ~55% throughput loss on sm_121.
-- GMU: gemma 0.30, ornith15 0.30, qwen36moe 0.25, qwen38 0.45, codernext 0.45 (NVFP4) or 0.72 (FP8). Keep the sum
-  of running models under ~0.85, so qwen38 or codernext-NVFP4 run with at most one of the others and codernext-FP8
-  runs alone; the switchboard enforces this, the overview Memory tile is the check.
+- GMU: gemma 0.30, ornith15 0.30, qwen36moe 0.25, qwen38 0.35 (NVFP4) or 0.45 (FP8), codernext 0.45 (NVFP4) or
+  0.72 (FP8). Keep the sum of running models under ~0.85, so qwen38 or codernext-NVFP4 run with at most one of the
+  others and codernext-FP8 runs alone; the switchboard enforces this, the overview Memory tile is the check.
 - Qwen3-Coder-Next is a hybrid (Gated DeltaNet + gated attention, 512 experts, 3B active). Neither quant ships MTP
   weights, so no speculative decoding; 3B active keeps decode quick anyway. Its KV cache is small (12 attention
   layers, 2 KV heads), which is why 262k context fits in GMU 0.45.

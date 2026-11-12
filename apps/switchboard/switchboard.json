@@ -1,44 +1,136 @@
 {
   "links": [
-    {"name": "Grafana",    "url": "https://{host}:3000"},
-    {"name": "Open WebUI", "url": "https://{host}:12000"}
+    {
+      "name": "Grafana",
+      "url": "https://{host}:3000"
+    },
+    {
+      "name": "Open WebUI",
+      "url": "https://{host}:12000"
+    }
   ],
-
   "presets": [
-    {"name": "Coding",              "note": "Ornith 1.5 + Qwen3.6 MoE (the default set)", "services": ["vllm-ornith15", "vllm-qwen36moe"]},
-    {"name": "Coder-Next + Ornith", "note": "needs the NVFP4 variant of Coder-Next",       "services": ["vllm-codernext", "vllm-ornith15"]},
-    {"name": "Coder-Next solo",     "note": "either variant",                              "services": ["vllm-codernext"]},
-    {"name": "Chat",                "note": "Gemma 4 (audio in) + Ornith",                  "services": ["vllm-gemma12", "vllm-ornith15"]},
-    {"name": "All off",             "note": "free the memory",                              "services": []}
+    {
+      "name": "Coding",
+      "note": "Ornith 1.5 + Qwen3.6 MoE (the default set)",
+      "services": [
+        "vllm-ornith15",
+        "vllm-qwen36moe"
+      ]
+    },
+    {
+      "name": "Coder-Next + Ornith",
+      "note": "needs the NVFP4 variant of Coder-Next",
+      "services": [
+        "vllm-codernext",
+        "vllm-ornith15"
+      ]
+    },
+    {
+      "name": "Coder-Next solo",
+      "note": "either variant",
+      "services": [
+        "vllm-codernext"
+      ]
+    },
+    {
+      "name": "Chat",
+      "note": "Gemma 4 (audio in) + Ornith",
+      "services": [
+        "vllm-gemma12",
+        "vllm-ornith15"
+      ]
+    },
+    {
+      "name": "All off",
+      "note": "free the memory",
+      "services": []
+    }
   ],
-
   "variants": {
     "vllm-codernext": [
-      {"name": "NVFP4", "note": "RedHatAI, 44 GiB, GMU 0.45: fits beside one other model",
-       "env": {"CODERNEXT_MODEL": "RedHatAI/Qwen3-Coder-Next-NVFP4", "CODERNEXT_GMU": "0.45"}},
-      {"name": "FP8",   "note": "Qwen official, 75 GiB, GMU 0.72: runs alone",
-       "env": {"CODERNEXT_MODEL": "Qwen/Qwen3-Coder-Next-FP8", "CODERNEXT_GMU": "0.72"}}
+      {
+        "name": "NVFP4",
+        "note": "RedHatAI, 44 GiB, GMU 0.45: fits beside one other model",
+        "env": {
+          "CODERNEXT_MODEL": "RedHatAI/Qwen3-Coder-Next-NVFP4",
+          "CODERNEXT_GMU": "0.45"
+        }
+      },
+      {
+        "name": "FP8",
+        "note": "Qwen official, 75 GiB, GMU 0.72: runs alone",
+        "env": {
+          "CODERNEXT_MODEL": "Qwen/Qwen3-Coder-Next-FP8",
+          "CODERNEXT_GMU": "0.72"
+        }
+      }
     ],
     "vllm-ornith15": [
-      {"name": "official NVFP4",  "note": "ornith-ai modelopt quant, 21.8 GiB",
-       "env": {"ORNITH_MODEL": "ornith-ai/Ornith-1.5-35B-A3B-NVFP4"}},
-      {"name": "agentic NVFP4-FP8", "note": "primitive-ai, GPTQ-calibrated on tool calls, 22.6 GiB",
-       "env": {"ORNITH_MODEL": "primitive-ai/Ornith-1.5-35B-A3B-agentic-NVFP4-FP8"}}
+      {
+        "name": "official NVFP4",
+        "note": "ornith-ai modelopt quant, 21.8 GiB",
+        "env": {
+          "ORNITH_MODEL": "ornith-ai/Ornith-1.5-35B-A3B-NVFP4"
+        }
+      },
+      {
+        "name": "agentic NVFP4-FP8",
+        "note": "primitive-ai, GPTQ-calibrated on tool calls, 22.6 GiB",
+        "env": {
+          "ORNITH_MODEL": "primitive-ai/Ornith-1.5-35B-A3B-agentic-NVFP4-FP8"
+        }
+      }
     ],
     "vllm-qwen38": [
-      {"name": "MTP, 3 drafts", "note": "built in, ~17 tok/s",
-       "env": {"QWEN_SPEC": "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"}},
-      {"name": "DFlash2 drafter", "note": "~32 tok/s; TRITON_ATTN until vLLM > 0.31",
-       "env": {"QWEN_SPEC": "{\"method\":\"dflash\",\"model\":\"z-lab/Qwen3.8-27B-DFlash2\",\"num_speculative_tokens\":7,\"attention_backend\":\"TRITON_ATTN\"}"}}
+      {
+        "name": "NVFP4 + MTP",
+        "note": "nvidia modelopt quant, 21 GiB, GMU 0.35; built-in MTP, 3 drafts",
+        "env": {
+          "QWEN38_MODEL": "nvidia/Qwen3.8-27B-NVFP4",
+          "QWEN38_GMU": "0.35",
+          "QWEN_SPEC": "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
+        }
+      },
+      {
+        "name": "FP8 + MTP",
+        "note": "Qwen official, 29 GiB, GMU 0.45; built-in MTP, ~17 tok/s",
+        "env": {
+          "QWEN38_MODEL": "Qwen/Qwen3.8-27B-FP8",
+          "QWEN38_GMU": "0.45",
+          "QWEN_SPEC": "{\"method\":\"mtp\",\"num_speculative_tokens\":3}"
+        }
+      },
+      {
+        "name": "FP8 + DFlash2",
+        "note": "~32 tok/s; TRITON_ATTN until vLLM > 0.31",
+        "env": {
+          "QWEN38_MODEL": "Qwen/Qwen3.8-27B-FP8",
+          "QWEN38_GMU": "0.45",
+          "QWEN_SPEC": "{\"method\":\"dflash\",\"model\":\"z-lab/Qwen3.8-27B-DFlash2\",\"num_speculative_tokens\":7,\"attention_backend\":\"TRITON_ATTN\"}"
+        }
+      }
     ]
   },
-
   "vscode": {
     "_comment": "Overrides for the generated VS Code model entry. Derived by default: id/url from the service, toolCalling from --enable-auto-tool-choice, thinking from --reasoning-parser, vision from --limit-mm-per-prompt, maxInputTokens = max-model-len - maxOutputTokens.",
-    "vllm-gemma12":   {"name": "Gemma 4 12B"},
-    "vllm-ornith15":  {"name": "Ornith-1.5-35B-A3B", "vision": true},
-    "vllm-qwen36moe": {"name": "Qwen3.6-35B-A3B"},
-    "vllm-qwen38":    {"name": "Qwen3.8-27B"},
-    "vllm-codernext": {"name": "Qwen3-Coder-Next"}
+    "vllm-gemma12": {
+      "name": "Gemma 4 12B"
+    },
+    "vllm-ornith15": {
+      "name": "Ornith-1.5-35B-A3B",
+      "vision": true
+    },
+    "vllm-qwen36moe": {
+      "name": "Qwen3.6-35B-A3B",
+      "vision": true
+    },
+    "vllm-qwen38": {
+      "name": "Qwen3.8-27B",
+      "vision": true
+    },
+    "vllm-codernext": {
+      "name": "Qwen3-Coder-Next"
+    }
   }
 }

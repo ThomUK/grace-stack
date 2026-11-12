@@ -1,7 +1,8 @@
 # grace-stack — services on grace (ASUS Ascent GX10, GB10, 128 GB unified)
 #
 #   vllm-gemma12   : google/gemma-4-12b-it     -> 127.0.0.1:8000   general chat, audio in
-#   vllm-qwen38    : Qwen3.8-27B-FP8           -> 127.0.0.1:8001   coding agent (dense; opt-in, was the default)
+#   vllm-qwen38    : Qwen3.8-27B (NVFP4/FP8)   -> 127.0.0.1:8001   coding agent (dense; opt-in, was the default)
+#                    quant + memory fraction are QWEN38_MODEL / QWEN38_GMU in .env (NVFP4 0.35, FP8 0.45)
 #   vllm-qwen36moe : Qwen3.6-35B-A3B-NVFP4     -> 127.0.0.1:8002   coding agent (mixture of experts)
 #   vllm-ornith15  : Ornith-1.5-35B-A3B (NVFP4) -> 127.0.0.1:8003  coding agent (default; mixture of experts)
 #                    which quant is ORNITH_MODEL in .env; the served name stays `ornith-1.5-35b-a3b`
@@ -89,12 +90,12 @@ services:
     container_name: vllm-qwen38
     ports: ["127.0.0.1:8001:8000"]
     command: >
-      vllm serve Qwen/Qwen3.8-27B-FP8
+      vllm serve ${QWEN38_MODEL:-nvidia/Qwen3.8-27B-NVFP4}
       --served-model-name qwen3.8-27b
       --host 0.0.0.0 --port 8000
       --max-model-len 131072
       --max-num-seqs 4
-      --gpu-memory-utilization 0.45
+      --gpu-memory-utilization ${QWEN38_GMU:-0.35}
       --enable-prefix-caching
       --enable-auto-tool-choice
       --tool-call-parser qwen3_xml
