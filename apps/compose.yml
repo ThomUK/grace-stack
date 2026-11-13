@@ -8,8 +8,8 @@ services:
     ports: ["127.0.0.1:12000:8080"]
     environment:
       - ENABLE_OLLAMA_API=false
-      - OPENAI_API_BASE_URLS=http://vllm-gemma12:8000/v1;http://vllm-ornith15:8000/v1;http://vllm-qwen36moe:8000/v1;http://vllm-codernext:8000/v1
-      - OPENAI_API_KEYS=x;x;x;x
+      - OPENAI_API_BASE_URLS=http://vllm-gemma12:8000/v1;http://vllm-qwen38-nvfp4:8000/v1;http://vllm-qwen38-fp8:8000/v1;http://vllm-qwen38-dflash:8000/v1;http://vllm-qwen36moe:8000/v1;http://vllm-ornith15-nvfp4:8000/v1;http://vllm-ornith15-agentic:8000/v1;http://vllm-codernext-nvfp4:8000/v1;http://vllm-codernext-fp8:8000/v1
+      - OPENAI_API_KEYS=x;x;x;x;x;x;x;x;x
     volumes:
       - open-webui:/app/backend/data
 
@@ -31,7 +31,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${PWD}:${PWD}:ro
-      - ${PWD}/.env:${PWD}/.env          # read-write: the variant switcher edits it
 
 volumes:
   open-webui:

@@ -6,17 +6,19 @@ Discovers the models from `docker compose config` (every service whose command i
 set whose fractions sum above MAX_GMU: on GB10 the GPU and the host share one pool, so
 over-committing means swap, not an error.
 
+Services that publish the same host port are siblings (one model, different quant or
+drafter): only one can run at a time, and a sibling's card offers "swap" (stop the holder,
+start this one). Per-service compose labels: switchboard.name (VS Code display name),
+switchboard.note (card text), switchboard.vision ("true" when no --limit-mm-per-prompt
+gives it away), switchboard.card (origin URL; default https://huggingface.co/<repo>).
+
 switchboard.json next to this file (re-read on every request) holds:
   links     shown at the top; {host} is TAILNET_HOST
   presets   whole sets to switch to: stop what is not wanted, then start the rest
-  variants  per service, named .env assignments (which quant, which drafter); applying
-            one rewrites .env and recreates the service if it is running
-  vscode    overrides for the generated VS Code chatLanguageModels entry
 
-Runs `docker compose` against the repo at STACK_DIR, which must be mounted at the same
-path as on the host so compose computes the same config hashes as your shell does; .env
-is mounted read-write for the variants. No auth: it holds the Docker socket, keep it on
-loopback + tailscale serve.
+Runs `docker compose` against the repo at STACK_DIR, mounted read-only at the same path as
+on the host so compose computes the same config hashes as your shell does. No auth: it
+holds the Docker socket, keep it on loopback + tailscale serve.
 """
 import collections
 import json
@@ -33,7 +35,6 @@ MAX_GMU = float(os.environ.get("MAX_GMU", "0.85"))
 PORT = int(os.environ.get("PORT", "8080"))
 PROJECT = os.environ.get("COMPOSE_PROJECT", "grace-stack")
 TAILNET_HOST = os.environ.get("TAILNET_HOST", "")
-ENV_FILE = os.path.join(STACK_DIR, ".env")
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "switchboard.json")
 if not os.path.exists(CONFIG):                        # in the image the script lives in /app
     CONFIG = os.path.join(STACK_DIR, "apps", "switchboard", "switchboard.json")
@@ -78,6 +79,9 @@ def models(refresh=False):
             if cmd[:2] != ["vllm", "serve"]:
                 continue
             ports = svc.get("ports") or [{}]
+            labels = svc.get("labels") or {}
+            if isinstance(labels, list):                  # compose may emit the list form
+                labels = dict(l.split("=", 1) if "=" in l else (l, "") for l in labels)
             found.append({
                 "service": name,
                 "container": svc.get("container_name", name),
@@ -88,8 +92,9 @@ def models(refresh=False):
                 "gmu": float(flag(cmd, "--gpu-memory-utilization") or 0.9),
                 "ctx": flag(cmd, "--max-model-len"),
                 "cmd": cmd,
+                "labels": {k: str(v) for k, v in labels.items() if k.startswith("switchboard.")},
             })
-        found.sort(key=lambda m: str(m["port"]))
+        found.sort(key=lambda m: (str(m["port"]), m["gmu"], m["service"]))   # siblings adjacent, smallest first
         _models_cache = (time.time(), found)
         return found
 
@@ -112,7 +117,7 @@ def container_states():
             states[n] = (c["State"], c["Status"], health)
     return states
 
-# ----------------------------------------------------------------- config + .env
+# ----------------------------------------------------------------- config
 
 
 def config():
@@ -120,78 +125,51 @@ def config():
         with open(CONFIG) as f:
             return json.load(f)
     except (OSError, ValueError) as e:
-        return {"presets": [{"name": "switchboard.json unreadable", "note": str(e), "services": []}],
-                "variants": {}, "vscode": {}, "links": []}
+        return {"presets": [{"name": "switchboard.json unreadable", "note": str(e), "services": []}], "links": []}
 
 
-ENV_LINE = re.compile(r"^(#\s*)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-
-
-def unquote(v):
-    v = v.strip()
-    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"" else v
-
-
-def env_values():
-    """Active KEY=value pairs from .env (last one wins, like compose)."""
-    vals = {}
+def origin_links(m):
+    """[(name, url)]: where the weights come from — the model's card, plus the drafter's if spec decoding loads one."""
+    links = [(m["model"], m["labels"].get("switchboard.card") or f"https://huggingface.co/{m['model']}")]
     try:
-        lines = open(ENV_FILE).read().splitlines()
-    except OSError:
-        return vals
-    for ln in lines:
-        m = ENV_LINE.match(ln)
-        if m and not m.group(1):
-            vals[m.group(2)] = unquote(m.group(3))
-    return vals
+        drafter = json.loads(flag(m["cmd"], "--speculative-config") or "{}").get("model")
+    except (ValueError, AttributeError):
+        drafter = None
+    if drafter:
+        links.append((drafter, f"https://huggingface.co/{drafter}"))
+    return links
 
 
-def env_write(text):
-    with open(ENV_FILE, "w") as f:   # in place: the directory is mounted read-only, only .env is writable
-        f.write(text)
+def siblings(service):
+    """Other services publishing the same host port: one model, different quant or drafter."""
+    port = by_service()[service]["port"]
+    return [m["service"] for m in models() if m["port"] == port and m["service"] != service]
 
 
-def env_set(changes):
-    """Make each KEY in changes active with its value, commenting out other KEY lines.
-    Reuses a matching commented line if there is one (keeps the file's own notes in order).
-    Returns the previous file text for rollback."""
-    text = open(ENV_FILE).read()
-    lines = text.splitlines()
-    for key, value in changes.items():
-        idx = [i for i, ln in enumerate(lines) if (m := ENV_LINE.match(ln)) and m.group(2) == key]
-        want = f"{key}={value}"
-        hit = next((i for i in idx if unquote(lines[i].lstrip("# ").split("=", 1)[1]) == unquote(value)), None)
-        for i in idx:
-            if not lines[i].startswith("#"):
-                lines[i] = "#" + lines[i]
-        if hit is not None:
-            lines[hit] = want
-        elif idx:
-            lines.insert(idx[-1] + 1, want)
-        else:
-            lines.append(want)
-    env_write("\n".join(lines) + "\n")
-    return text
+def port_conflicts(services):
+    """Human-readable list of sibling pairs inside `services` (they cannot run together)."""
+    ports = collections.defaultdict(list)
+    for m in models():
+        if m["service"] in services:
+            ports[m["port"]].append(m["service"])
+    return [f"{' and '.join(v)} share :{p}" for p, v in ports.items() if len(v) > 1]
 
 # ----------------------------------------------------------------- views
 
 
-def vscode_entry(m, override):
-    cmd = m["cmd"]
-    out_tokens = int(override.get("maxOutputTokens", 16000))
+def vscode_entry(m):
+    cmd, lb = m["cmd"], m["labels"]
+    out_tokens = 16000
     ctx = int(m["ctx"] or 32768)
-    e = {"id": m["served"], "name": override.get("name", m["served"]), "url": m["url"],
+    e = {"id": m["served"], "name": lb.get("switchboard.name", m["served"]), "url": m["url"],
          "toolCalling": "--enable-auto-tool-choice" in cmd,
-         "vision": bool(override.get("vision", flag(cmd, "--limit-mm-per-prompt") is not None)),
+         "vision": lb.get("switchboard.vision") == "true" or flag(cmd, "--limit-mm-per-prompt") is not None,
          "maxInputTokens": max(ctx - out_tokens, 4096), "maxOutputTokens": out_tokens}
     if flag(cmd, "--reasoning-parser"):
         e.update({"thinking": True, "supportsReasoningEffort": ["low", "medium", "high"],
                   "reasoningEffortFormat": "chat-completions"})
     else:
         e["thinking"] = False
-    for k, v in override.items():
-        if k not in ("name", "vision", "maxOutputTokens"):
-            e[k] = v
     return e
 
 
@@ -199,8 +177,10 @@ def snapshot():
     cfg = config()
     ms = [dict(m) for m in models()]
     st = container_states()
-    env = env_values()
     known = {m["service"] for m in ms}
+    by_port = collections.defaultdict(list)
+    for m in ms:
+        by_port[m["port"]].append(m["service"])
     for m in ms:
         state, status, health = st.get(m["container"], ("absent", "never created", None))
         if state == "running":
@@ -209,28 +189,30 @@ def snapshot():
             m["status"] = "down"
         m["detail"] = status
         m["url"] = f"https://{TAILNET_HOST}:{m['port']}/v1" if TAILNET_HOST and m["port"] else f"http://127.0.0.1:{m['port']}/v1"
-        m["variants"] = [{"name": v["name"], "note": v.get("note", ""),
-                          "active": all(env.get(k) == unquote(str(val)) for k, val in v.get("env", {}).items())}
-                         for v in cfg.get("variants", {}).get(m["service"], [])]
-        entry = vscode_entry(m, cfg.get("vscode", {}).get(m["service"], {}))
+        m["note"] = m["labels"].get("switchboard.note", "")
+        m["origin"] = [{"name": n, "url": u} for n, u in origin_links(m)]
+        m["siblings"] = [s for s in by_port[m["port"]] if s != m["service"]]
+        entry = vscode_entry(m)
         m["vscode_entry"] = json.dumps(entry, indent=2)
         m["vscode_block"] = json.dumps([{"name": "Grace", "vendor": "customendpoint",
                                          "apiType": "chat-completions", "models": [entry]}], indent=2)
-        del m["cmd"]
+        del m["cmd"], m["labels"]
     running = {m["service"] for m in ms if m["status"] != "down"}
+    for m in ms:
+        m["held_by"] = next((s for s in m["siblings"] if s in running), None)
     gmu = {m["service"]: m["gmu"] for m in ms}
     used = sum(gmu[s] for s in running)
     ps = []
     for p in cfg.get("presets", []):
         unknown = [s for s in p.get("services", []) if s not in known]
+        conflict = port_conflicts(p.get("services", []))
         total = sum(gmu.get(s, 0) for s in p.get("services", []))
-        ps.append({**p, "gmu": round(total, 2), "fits": total <= MAX_GMU + 1e-9 and not unknown,
-                   "unknown": unknown, "active": set(p.get("services", [])) == running})
+        ps.append({**p, "gmu": round(total, 2), "fits": total <= MAX_GMU + 1e-9 and not unknown and not conflict,
+                   "unknown": unknown, "conflict": conflict, "active": set(p.get("services", [])) == running})
     links = [{"name": l["name"], "url": l["url"].replace("{host}", TAILNET_HOST or "localhost")}
              for l in cfg.get("links", [])]
     return {"models": ms, "presets": ps, "links": links, "gmu_used": round(used, 2), "max_gmu": MAX_GMU,
-            "job": JOBS.current(), "history": JOBS.history(), "host": TAILNET_HOST, "stack_dir": STACK_DIR,
-            "env_writable": os.access(ENV_FILE, os.W_OK)}
+            "job": JOBS.current(), "history": JOBS.history(), "host": TAILNET_HOST, "stack_dir": STACK_DIR}
 
 # ----------------------------------------------------------------- jobs (one at a time)
 
@@ -303,10 +285,21 @@ def up(ms, services):
     return run(compose_args(ms) + ["up", "-d", "--no-build", "--no-deps"] + services)
 
 
+def holder(service):
+    """The running sibling that holds `service`'s port, else None."""
+    running = running_services()
+    return next((s for s in siblings(service) if s in running), None)
+
+
+def check_port(service):
+    h = holder(service)
+    return f"refused: :{by_service()[service]['port']} is held by {h}; use swap" if h else None
+
+
 def do_start(services):
     def fn(job):
         ms = by_service()
-        err = check_fit(services, running_services() - set(services))
+        err = next(filter(None, map(check_port, services)), None) or check_fit(services, running_services() - set(services))
         if err:
             return False, err
         rc, out = up([ms[s] for s in services], services)
@@ -338,7 +331,7 @@ def do_preset(preset):
         unknown = [s for s in wanted if s not in ms]
         if unknown:
             return False, f"preset names unknown services: {unknown}"
-        err = check_fit(wanted, [])
+        err = check_fit(wanted, []) or "; ".join(port_conflicts(wanted)) or None
         if err:
             return False, err
         running = running_services()
@@ -359,26 +352,21 @@ def do_preset(preset):
     return fn
 
 
-def do_variant(service, variant):
+def do_swap(service):
+    """Stop the sibling holding this service's port, then start this one."""
     def fn(job):
-        was_running = service in running_services()
-        old = env_set(variant["env"])
-        log = [f"$ .env: {', '.join(f'{k}={v}' for k, v in variant['env'].items())}"]
-        try:
-            models(refresh=True)                      # compose re-reads .env: new GMU, new model
-        except Exception as e:  # noqa: BLE001
-            env_write(old)
-            models(refresh=True)
-            return False, f"reverted .env, compose rejected it:\n{e}"
-        if not was_running:
-            return True, "\n".join(log + [f"{service} is down; it will use '{variant['name']}' on its next start"])
-        err = check_fit([service], running_services() - {service})
+        ms = by_service()
+        h = holder(service)
+        if not h:
+            return False, f"nothing to swap: no sibling of {service} is running"
+        err = check_fit([service], running_services() - {h, service})
         if err:
-            env_write(old)
-            models(refresh=True)
-            return False, "\n".join(log + ["reverted .env: " + err])
-        m = by_service()[service]
-        rc, out = up([m], [service])                  # changed command => compose recreates it
+            return False, err
+        rc, out = run(compose_args([ms[h]]) + ["stop", h])
+        log = [f"$ stop {h}\n{out}"]
+        if rc != 0:
+            return False, "\n".join(log)
+        rc, out = up([ms[service]], [service])
         log.append(f"$ up -d {service}\n{out}")
         return rc == 0, "\n".join(log)
     return fn
@@ -409,15 +397,16 @@ PAGE = r"""<!doctype html>
   .up .dot { background:var(--up) } .loading .dot { background:var(--load); animation:pulse 1s infinite alternate } .unhealthy .dot { background:var(--bad) }
   @keyframes pulse { from { opacity:.4 } to { opacity:1 } }
   .meta { color:var(--dim); font-size:12.5px; margin:6px 0 10px; word-break:break-all }
-  .meta code, .var code { color:var(--fg); font-size:12px }
+  .meta code { color:var(--fg); font-size:12px }
+  .meta a { color:var(--accent); text-decoration:none } .meta a:hover { text-decoration:underline }
+  .note { color:var(--dim); font-size:12.5px; margin:-4px 0 10px }
+  .group { grid-column:1 / -1; border:1px dashed var(--line); border-radius:12px; padding:10px 12px 12px }
+  .ghead { color:var(--dim); font-size:13px; margin:0 0 10px } .ghead code { color:var(--fg); font-size:12.5px }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
-  button, select { background:#242a35; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; font:inherit; font-size:13.5px; cursor:pointer }
+  button { background:#242a35; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; font:inherit; font-size:13.5px; cursor:pointer }
   button:hover { border-color:var(--accent) } button:disabled { opacity:.4; cursor:default }
   button.primary { background:#1f4a7a; border-color:#2b6cb0 } button.danger { background:#4a1f23; border-color:#8b2d35 }
   button.small { padding:3px 9px; font-size:12.5px }
-  select { max-width:100%; padding:5px 8px }
-  .var { margin:10px 0 0; padding-top:10px; border-top:1px dashed var(--line) }
-  .var .note { color:var(--dim); font-size:12.5px; margin-top:4px }
   details { margin-top:10px; border-top:1px dashed var(--line); padding-top:8px }
   summary { cursor:pointer; color:var(--dim); font-size:13px } summary:hover { color:var(--fg) }
   .presets { display:flex; gap:10px; flex-wrap:wrap }
@@ -441,7 +430,7 @@ PAGE = r"""<!doctype html>
 <script>
 const $ = (id) => document.getElementById(id);
 let state = null, logService = null;
-const openDetails = new Set(), chosenVariant = {};
+const openDetails = new Set();
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 3500); }
 async function api(path, body){
@@ -456,15 +445,10 @@ function copyText(id, what){
   else fallbackCopy(text, done);
 }
 function fallbackCopy(text, done){ const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch(e) { toast('copy failed: select the text and copy'); } ta.remove(); }
-function applyVariant(svc, running){
-  const sel = $('var-'+svc), name = sel.value;
-  const msg = running ? `Switch ${svc} to '${name}' and recreate it now? Reload takes ~4 min.` : `Set ${svc} to '${name}'? It takes effect on the next start.`;
-  act('/api/variant', {service: svc, name}, msg);
-}
 function render(){
   const s = state, busy = !!s.job;
   $('links').innerHTML = s.links.map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)} ↗</a>`).join('');
-  $('sub').textContent = `${s.models.filter(m=>m.status==='up').length} of ${s.models.length} models up · ${s.host || 'localhost'}` + (s.env_writable ? '' : ' · .env is read-only: variants disabled');
+  $('sub').textContent = `${s.models.filter(m=>m.status==='up').length} of ${s.models.length} models up · ${s.host || 'localhost'}`;
   const pct = Math.min(100, 100*s.gmu_used), bar=$('bar');
   bar.className = 'bar' + (s.gmu_used > s.max_gmu ? ' over' : s.gmu_used > s.max_gmu-0.15 ? ' warn' : '');
   bar.firstElementChild.style.width = pct+'%'; bar.lastElementChild.style.left = (100*s.max_gmu)+'%';
@@ -472,32 +456,31 @@ function render(){
   $('presets').innerHTML = s.presets.map(p => `
     <div class="preset ${p.active?'active':''}">
       <div class="row" style="justify-content:space-between"><b>${esc(p.name)}</b><span class="sub">GMU ${p.gmu.toFixed(2)}</span></div>
-      <div class="note">${esc(p.note||'')} ${p.unknown.length?'· unknown: '+esc(p.unknown.join(', ')):''}</div>
+      <div class="note">${esc(p.note||'')} ${p.unknown.length?'· unknown: '+esc(p.unknown.join(', ')):''} ${p.conflict.length?'· '+esc(p.conflict.join('; ')):''}</div>
       <button class="primary" ${(busy||p.active||!p.fits)?'disabled':''} onclick="act('/api/preset',{name:${JSON.stringify(p.name)}}, 'Switch to preset ${esc(p.name)}? Running models not in it will be stopped.')">${p.active?'active':(p.fits?'switch':'does not fit')}</button>
     </div>`).join('');
-  $('models').innerHTML = s.models.map(m => {
-    const fits = (s.gmu_used + m.gmu) <= s.max_gmu + 1e-9, running = m.status !== 'down';
-    const active = m.variants.find(v => v.active), sel = chosenVariant[m.service] || (active && active.name) || (m.variants[0] && m.variants[0].name);
-    const selV = m.variants.find(v => v.name === sel);
-    const variants = m.variants.length ? `
-      <div class="var"><div class="row">
-        <span class="sub">variant</span>
-        <select id="var-${m.service}" onchange="chosenVariant['${m.service}']=this.value; render()">${m.variants.map(v => `<option value="${esc(v.name)}" ${v.name===sel?'selected':''}>${esc(v.name)}${v.active?' (current)':''}</option>`).join('')}</select>
-        <button class="small" ${(busy||!s.env_writable||(selV&&selV.active))?'disabled':''} onclick="applyVariant('${m.service}', ${running})">${selV&&selV.active?'current':(running?'apply + recreate':'apply')}</button>
-        ${active?'':'<span class="sub">(.env has a custom value)</span>'}
-      </div><div class="note">${esc(selV ? selV.note : '')}</div></div>` : '';
+  const gmuOf = (svc) => { const x = s.models.find(m => m.service === svc); return x ? x.gmu : 0; };
+  const card = (m) => {
+    const running = m.status !== 'down';
+    const fits = (s.gmu_used + m.gmu) <= s.max_gmu + 1e-9;
+    const fitsSwap = m.held_by && (s.gmu_used - gmuOf(m.held_by) + m.gmu) <= s.max_gmu + 1e-9;
     const vsOpen = openDetails.has(m.service) ? 'open' : '';
+    const origin = m.origin.map(o => `<a href="${esc(o.url)}" target="_blank" rel="noopener" title="origin model card">${esc(o.name)} ↗</a>`).join(' + ');
+    const startBtn = m.held_by
+      ? `<button class="primary" ${(busy||!fitsSwap)?'disabled':''} title="${fitsSwap?'':'would exceed MAX_GMU'}" onclick="act('/api/swap',{service:'${m.service}'}, 'Stop ${m.held_by} and start ${m.service}? Reload takes ~4 min.')">${fitsSwap?'swap in':'swap (no room)'}</button>
+         <span class="sub">:${esc(m.port)} is held by ${esc(m.held_by)}</span>`
+      : `<button class="primary" ${(busy||!fits)?'disabled':''} title="${fits?'':'would exceed MAX_GMU'}" onclick="act('/api/start',{service:'${m.service}'})">${fits?'start':'start (no room)'}</button>`;
     return `<div class="card ${m.status}">
       <div class="name"><span class="dot"></span>${esc(m.service)} <span class="sub" style="font-weight:400">· ${esc(m.status)}</span></div>
-      <div class="meta">${esc(m.model)}<br>served as <code>${esc(m.served)}</code> · GMU ${m.gmu.toFixed(2)} · ctx ${esc(m.ctx||'?')}<br><code>${esc(m.url)}</code><br>${esc(m.detail)}</div>
+      <div class="meta">${origin}<br>served as <code>${esc(m.served)}</code> · GMU ${m.gmu.toFixed(2)} · ctx ${esc(m.ctx||'?')}<br><code>${esc(m.url)}</code><br>${esc(m.detail)}</div>
+      ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
       <div class="row">
         ${!running
-          ? `<button class="primary" ${(busy||!fits)?'disabled':''} title="${fits?'':'would exceed MAX_GMU'}" onclick="act('/api/start',{service:'${m.service}'})">${fits?'start':'start (no room)'}</button>`
+          ? startBtn
           : `<button class="danger" ${busy?'disabled':''} onclick="act('/api/stop',{service:'${m.service}'}, 'Stop ${m.service}? Reload takes ~4 min.')">stop</button>
              <button ${busy?'disabled':''} onclick="act('/api/restart',{service:'${m.service}'}, 'Restart ${m.service}?')">restart</button>`}
         <button onclick="showLogs('${m.service}')">logs</button>
       </div>
-      ${variants}
       <details ${vsOpen} ontoggle="this.open ? openDetails.add('${m.service}') : openDetails.delete('${m.service}')">
         <summary>VS Code · chatLanguageModels.json</summary>
         <div class="row" style="margin-top:8px">
@@ -508,7 +491,18 @@ function render(){
         <pre id="vs-${m.service}">${esc(m.vscode_block)}</pre>
         <pre id="vse-${m.service}" hidden>${esc(m.vscode_entry)}</pre>
       </details>
-    </div>`;}).join('');
+    </div>`;};
+  // siblings (same host port) sit together in a full-width group; one of them at a time
+  const groups = [];
+  for (const m of s.models) {
+    const g = groups.length && groups[groups.length-1].port === m.port ? groups[groups.length-1] : (groups.push({port: m.port, ms: []}), groups[groups.length-1]);
+    g.ms.push(m);
+  }
+  $('models').innerHTML = groups.map(g => g.ms.length === 1 ? card(g.ms[0]) : `
+    <div class="group">
+      <div class="ghead">served as <code>${esc(g.ms[0].served)}</code> on :${esc(g.port)} · ${g.ms.length} variants, one at a time</div>
+      <div class="grid">${g.ms.map(card).join('')}</div>
+    </div>`).join('');
   const jobs = [];
   if (s.job) jobs.push(`<div class="job"><span class="busy">⟳ ${esc(s.job.title)}</span><span>${Math.round(Date.now()/1000 - s.job.started)} s</span></div>`);
   for (const j of s.history) jobs.push(`<div class="job"><span class="${j.ok?'ok':'fail'}">${j.ok?'✓':'✗'} ${esc(j.title)}</span><span>${new Date(j.finished*1000).toLocaleTimeString()} · ${j.seconds} s</span></div>` + (j.ok && j.output==='ok' ? '' : `<pre>${esc(j.output)}</pre>`));
@@ -572,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(404, {"error": f"unknown service {svc!r}"})
                 verb = u.path.rsplit("/", 1)[1]
                 if verb == "start":   # answer the obvious refusal now; the job re-checks before acting
-                    err = check_fit([svc], running_services() - {svc})
+                    err = check_port(svc) or check_fit([svc], running_services() - {svc})
                     if err:
                         return self.send(409, {"error": err})
                 fn = {"start": do_start, "stop": do_stop, "restart": do_restart}[verb]([svc])
@@ -581,18 +575,18 @@ class Handler(BaseHTTPRequestHandler):
                 p = next((p for p in config().get("presets", []) if p.get("name") == body.get("name")), None)
                 if not p:
                     return self.send(404, {"error": f"unknown preset {body.get('name')!r}"})
-                err = check_fit(p.get("services", []), [])
+                err = check_fit(p.get("services", []), []) or "; ".join(port_conflicts(p.get("services", []))) or None
                 if err:
                     return self.send(409, {"error": err})
                 ok, msg = JOBS.submit(f"preset {p['name']}", do_preset(p))
-            elif u.path == "/api/variant":
+            elif u.path == "/api/swap":
                 svc = body.get("service")
-                v = next((v for v in config().get("variants", {}).get(svc, []) if v.get("name") == body.get("name")), None)
-                if svc not in by_service() or not v:
-                    return self.send(404, {"error": f"unknown variant {body.get('name')!r} for {svc!r}"})
-                if not os.access(ENV_FILE, os.W_OK):
-                    return self.send(409, {"error": ".env is not writable from the switchboard container"})
-                ok, msg = JOBS.submit(f"{svc} → {v['name']}", do_variant(svc, v))
+                if svc not in by_service():
+                    return self.send(404, {"error": f"unknown service {svc!r}"})
+                h = holder(svc)
+                if not h:
+                    return self.send(409, {"error": f"no sibling of {svc} is running; use start"})
+                ok, msg = JOBS.submit(f"swap {h} → {svc}", do_swap(svc))
             else:
                 return self.send(404, {"error": "not found"})
             return self.send(202 if ok else 409, {"message": msg} if ok else {"error": msg})
@@ -603,8 +597,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not os.path.exists(os.path.join(STACK_DIR, "docker-compose.yml")):
         raise SystemExit(f"STACK_DIR={STACK_DIR} has no docker-compose.yml; mount the repo there")
-    print(f"switchboard: stack {STACK_DIR}, project {PROJECT}, max GMU {MAX_GMU}, port {PORT}, "
-          f".env {'writable' if os.access(ENV_FILE, os.W_OK) else 'READ-ONLY'}")
+    print(f"switchboard: stack {STACK_DIR}, project {PROJECT}, max GMU {MAX_GMU}, port {PORT}")
     for m in models():
-        print(f"  {m['service']:<16} gmu {m['gmu']:<5} port {m['port']}  {m['model']}")
+        print(f"  {m['service']:<24} gmu {m['gmu']:<5} :{m['port']}  {m['model']}")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
