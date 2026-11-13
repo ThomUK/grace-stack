@@ -5,7 +5,7 @@ Everything that runs on grace (ASUS Ascent GX10, GB10, 128 GB unified), as compo
     docker-compose.yml      include: one line per module
     .env                    secrets and per-machine knobs (gitignored); .env.example is the template
     models/                 vLLM endpoints       compose.yml, vllm/Dockerfile
-    apps/                   Open WebUI, DGX dash compose.yml
+    apps/                   Open WebUI, switchboard compose.yml, switchboard/
     monitoring/             Prometheus + Grafana compose.yml, prometheus/, grafana/
 
 Each module is a folder holding its own `compose.yml` and config; paths inside it are relative to the folder.
@@ -17,58 +17,155 @@ and list only those in `docker-compose.yml`.
 
 | module     | service        | port                 | notes |
 |------------|----------------|----------------------|-------|
-| models     | vllm-gemma12   | 127.0.0.1:8000       | gemma-4-12b-it as `gemma4-12b`; profile `gemma12` |
-| models     | vllm-qwen38    | 127.0.0.1:8001       | Qwen3.8-27B-FP8 as `qwen3.8-27b`; MTP spec decode; profile `qwen38` |
-| models     | vllm-qwen36moe | 127.0.0.1:8002       | Qwen3.6-35B-A3B-NVFP4 as `qwen3.6-35b-a3b`; MTP spec decode; profile `qwen36moe` |
+| models     | vllm-gemma12   | 127.0.0.1:8000       | gemma-4-12b-it as `gemma4-12b`; audio in |
+| models     | vllm-qwen38-nvfp4 ╷ -fp8 | 127.0.0.1:8001 | Qwen3.8-27B as `qwen3.8-27b`: nvidia NVFP4 or Qwen FP8, both with MTP; one at a time |
+| models     | vllm-qwen36moe | 127.0.0.1:8002       | Qwen3.6-35B-A3B-NVFP4 as `qwen3.6-35b-a3b`; MTP spec decode |
+| models     | vllm-ornith15-nvfp4 ╷ -agentic ╷ -bf16 | 127.0.0.1:8003 | Ornith-1.5-35B-A3B as `ornith-1.5-35b-a3b`: ornith-ai NVFP4, primitive-ai agentic NVFP4-FP8, or the unquantised bf16 (GMU 0.72, runs alone); one at a time |
+| models     | vllm-codernext-nvfp4 ╷ -fp8 | 127.0.0.1:8004 | Qwen3-Coder-Next 80B-A3B as `qwen3-coder-next`: RedHatAI NVFP4 (GMU 0.45) or Qwen FP8 (0.72, runs alone); non-thinking; one at a time |
+| models     | vllm-qwen35-122b | 127.0.0.1:8005     | Qwen3.5-122B-A10B RedHatAI NVFP4 as `qwen3.5-122b-a10b`; vision in; MTP; GMU 0.75, runs alone |
+| models     | vllm-nemotron-omni | 127.0.0.1:8006   | Nemotron 3 Nano Omni 30B-A3B FP8 as `nemotron-3-nano-omni-30b-a3b`; image + video in; reasoning; GMU 0.45 |
 | apps       | open-webui     | 127.0.0.1:12000      | data in external volume `open-webui` |
-| apps       | dgx-dashboard  | 127.0.0.1:8080       | start/stop buttons; holds the Docker socket |
+| apps       | switchboard    | 127.0.0.1:8080       | start/stop models and presets; holds the Docker socket; own login (password + TOTP) |
 | monitoring | grafana        | 127.0.0.1:3000       | the dashboards; login from .env |
 | monitoring | prometheus     | internal             | 30 d retention |
 | monitoring | dcgm-exporter  | internal             | GPU temps/power/util |
 | monitoring | node-exporter  | internal             | host memory, CPU, hwmon temps, disk |
 | monitoring | cadvisor       | internal             | per-container CPU/memory/restarts |
 
+Every model service sits behind a profile named after it (minus `vllm-`), so `docker compose up -d` never starts
+or recreates a model: they start from the switchboard (or `docker compose --profile X up -d vllm-X`) and come back
+after a reboot through `restart: unless-stopped`. Services sharing a host port are *siblings*, one model behind
+different quants or drafters; only one can run, and the switchboard swaps between them.
 Model weights are in `~/.cache/huggingface` (`HF_CACHE`), outside the repo. `vllm-cache` keeps torch.compile output.
 Ports on 127.0.0.1 are fronted by `tailscale serve`; a `0.0.0.0` bind on a port Tailscale also serves fails at boot
 ("address already in use"), so never give both the same port.
 
 ## Bring-up
-    cp .env.example .env && nano .env        # HF_TOKEN, GRAFANA_ADMIN_PASSWORD, TAILNET_HOST, COMPOSE_PROFILES
+    cp .env.example .env && nano .env        # HF_TOKEN, GRAFANA_ADMIN_PASSWORD, TAILNET_HOST
     chmod 600 .env
     docker volume create open-webui          # declared external, so compose won't create it
     python3 monitoring/grafana/build_dashboards.py   # dashboard JSON is generated, not committed
-    docker compose build                     # grace/vllm from the official aarch64 image
-    docker compose up -d
-    docker compose ps                        # (starting) → (healthy); models take ~4 min
+    docker compose build                     # grace/vllm from the official aarch64 image, grace/switchboard
+    docker compose up -d                     # infra only; run from the repo root: the switchboard mounts $PWD
+    docker logs switchboard                  # shows the one-time setup token for the switchboard login
+    xdg-open http://127.0.0.1:8080           # set up login (token, password, scan QR), then pick a preset; models take ~4 min
 
     sudo tailscale serve --bg --https=12000 http://127.0.0.1:12000   # Open WebUI
     sudo tailscale serve --bg --https=3000  http://127.0.0.1:3000    # Grafana
     sudo tailscale serve --bg --https=8000  http://127.0.0.1:8000    # gemma API
-    sudo tailscale serve --bg --https=8001  http://127.0.0.1:8001    # qwen38 API
+    sudo tailscale serve --bg --https=8001  http://127.0.0.1:8001    # qwen38 API (only if you run one of those)
     sudo tailscale serve --bg --https=8002  http://127.0.0.1:8002    # qwen36moe API
-    sudo tailscale serve --bg --https=8080  http://127.0.0.1:8080    # DGX dash
+    sudo tailscale serve --bg --https=8003  http://127.0.0.1:8003    # ornith15 API
+    sudo tailscale serve --bg --https=8004  http://127.0.0.1:8004    # codernext API
+    sudo tailscale serve --bg --https=8005  http://127.0.0.1:8005    # qwen3.5-122b API
+    sudo tailscale serve --bg --https=8006  http://127.0.0.1:8006    # nemotron omni API
+    sudo tailscale serve --bg --https=8080  http://127.0.0.1:8080    # switchboard
+    sudo tailscale serve --bg --https=11000 http://127.0.0.1:11000   # NVIDIA DGX Dashboard (system updates, settings)
 
 URLs: `https://<machine>.<tailnet>.ts.net:<port>`, the name you set as `TAILNET_HOST`. HTTPS is bound to that
 name (mic in Open WebUI needs it).
 
 ## Security
-Nothing here is meant to face the internet. Loopback binds plus `tailscale serve` are the only access control
-for most services, so every member of your tailnet can reach them:
-- The vLLM endpoints run without `--api-key`.
-- dgx-dashboard holds the Docker socket, which is root-equivalent on the host. Keep it off the LAN.
+Nothing here is meant to face the internet (Funnel stays off). Everything below is reachable by any device on
+the tailnet, so each service's own login is the second layer:
+
+| exposed | auth |
+|---|---|
+| Grafana :3000, Open WebUI :12000 | their own user accounts |
+| DGX Dashboard :11000 | NVIDIA's own login |
+| switchboard :8080 | password + TOTP, below. It holds the Docker socket, which is root-equivalent on the host |
+| vLLM APIs :8000–:8006 | **none yet** (`--api-key` is the fix; pending) |
+
 - cadvisor is `privileged`; cadvisor and node-exporter mount the host filesystem read-only.
+- If your tailnet devices are *tagged* (common with auth keys), `tailscale serve` adds no user identity headers, so
+  identity-based tricks (Grafana's auth proxy and the like) have nothing to read. Restrict by device instead, in the
+  admin console's Access controls. A starting point, which only restricts once the default `"*" → "*"` rule is
+  removed; give this machine its own tag (`tag:grace` below) rather than addressing it by IP:
+
+      "grants": [
+        // admin pages: your own laptop and phone only
+        { "src": ["tag:laptop", "tag:phone"], "dst": ["tag:grace"], "ip": ["tcp:8080", "tcp:11000"] },
+        // Grafana, Open WebUI and the model APIs: those two plus any machine that should call the models
+        { "src": ["tag:laptop", "tag:phone", "tag:agents"], "dst": ["tag:grace"],
+          "ip": ["tcp:3000", "tcp:12000", "tcp:8000-8006"] }
+        // plus whatever else the tailnet needs (SSH to grace, your own devices to each other)
+      ]
+
+### Switchboard login
+Standard library plus one QR library in the image, no extra container, nothing in `.env`. State (scrypt password
+hash, TOTP secret) lives in the `switchboard-auth` volume at `/auth/auth.json`, mode 600.
+
+- **First run**: the container log prints a setup token. The page asks for the token and a new password (six
+  characters or more), then shows a QR code and the key for your authenticator app and finishes when you enter a
+  code from it. Until that is done every request but `/health` is refused, and the token stops a stranger on the
+  tailnet from claiming the page first.
+- **Signing in**: password + six-digit code (RFC 6238; a code is accepted once, one step of clock skew either way).
+  A random token goes in an `HttpOnly; Secure; SameSite=Strict` cookie; sessions end after 12 h idle or 7 days, and
+  all of them on a container restart (`up -d --build` included).
+- **Account** (link in the header): change the password, or replace the authenticator with a fresh QR; both need the
+  current password and a current code.
+- **Lost phone**: `docker compose run --rm switchboard --reset-auth`, then `docker compose restart switchboard`;
+  the log prints a new setup token and the page starts over. Anyone who can run that has root on grace anyway.
+- **Throttle**: token, password and code checks share one queue; from the third consecutive failure the delay
+  doubles (capped at a minute) and twenty failures lock everything for fifteen minutes. Each failure is logged with
+  the tailnet address `tailscale serve` forwards.
+- **CSRF**: every POST must be same-origin (`Sec-Fetch-Site` / `Origin`), so a page you have open elsewhere cannot
+  stop a model. The login, setup and account pages carry no scripts and load nothing from third parties.
 
 ## Operating
     docker compose up -d                        # apply edits; recreates only what changed
     docker compose up -d --build                # also rebuild grace/vllm after a Dockerfile edit
-    docker compose --profile gemma12 up -d      # one model profile (or set COMPOSE_PROFILES in .env)
-    docker compose stop vllm-qwen38             # free its memory; `start` reloads in ~4 min
-    docker compose logs -f vllm-qwen38          # throughput + prefix-cache hit rate every 10 s
+    docker compose --profile gemma12 up -d vllm-gemma12   # one model by hand (the switchboard does the same)
+    docker compose stop vllm-ornith15-agentic   # free its memory; `start` reloads in ~4 min (or use the switchboard)
+    docker compose logs -f vllm-ornith15-agentic   # throughput + prefix-cache hit rate every 10 s
     docker compose config                       # the fully assembled file; check paths and ${VARS}
     docker compose down                         # keeps volumes (-v wipes vllm-cache, prometheus, grafana)
 
-Plain `up -d` never rebuilds an image. A changed `command:` recreates that container.
+Plain `up -d` never rebuilds an image and never touches a model (they are all behind profiles). A changed model
+`command:` takes effect on its next start or restart from the switchboard, which passes the profile.
 A container that exists but lost its port mapping needs `up -d --force-recreate <service>`.
+
+## Switchboard
+`https://<machine>.<tailnet>.ts.net:8080`: a **Running** strip (what is up, with stop / restart / logs), presets
+that switch whole sets (stop what is not wanted, then start the rest), one collapsed section per model maker
+holding a card per vLLM service, and links to the NVIDIA DGX Dashboard (OS updates and settings, port 11000 on
+the host), Grafana and Open WebUI. A maker's summary line shows its logo, how many variants it has and one
+status dot per variant; sections stay collapsed until opened, and toggles persist for the page session.
+It discovers the models from `docker compose config`, so a new `vllm serve` service in `models/compose.yml`
+appears by itself; the memory fraction shown is the service's `--gpu-memory-utilization`. It refuses any start
+that would take the running sum above `MAX_GMU` (.env, default 0.85). Siblings (same host port) are shown
+together; while one holds the port the others offer **swap**, which stops the holder and starts the chosen one.
+Each card carries the maker's logo (its Hugging Face org avatar) and, when the repo owner is a different org,
+the quantiser's logo next to it. The model id links to its origin card (and the drafter's, where spec decoding
+loads one), so what is being served is one click from where it came from.
+Under that: size on disk, weights in memory (the snapshot's safetensors bytes, which is what vLLM reports as
+"Model loading took" before any KV cache), and max context. Sizes come from `~/.cache/huggingface`, mounted
+read-only into the container; a model not yet downloaded says so.
+
+Models start **one at a time**. Two loading together each measure the shared GB10 pool while the other is
+still allocating, and one ends up with "No available memory for the cache blocks". A preset therefore starts
+its services in sequence, waiting for each to turn healthy (~4 min), and start / swap are refused while
+anything is still loading.
+
+Per-model metadata is compose `labels` on the service, next to the command it describes:
+- `switchboard.note`: one line on the card (who made the quant, size, drafter).
+- `switchboard.name`: display name in the generated VS Code entry. The rest of that entry comes from the command
+  line (`toolCalling` from `--enable-auto-tool-choice`, `thinking` from `--reasoning-parser`, `vision` from
+  `--limit-mm-per-prompt`, `maxInputTokens` = `--max-model-len` minus 16000).
+- `switchboard.vision: "true"`: for a multimodal model that has no `--limit-mm-per-prompt` flag.
+- `switchboard.card`: origin URL, when the weights are not a Hugging Face repo.
+- `switchboard.logo`: Hugging Face org of the model's maker, when the repo owner is only the quantiser (a RedHatAI
+  or nvidia quant of a Qwen model says `Qwen`). Both avatars are shown, and the maker decides which section the
+  card sits in.
+
+`apps/switchboard/switchboard.json`, re-read on every request, holds the rest:
+- `presets`: named sets of services (a preset naming two siblings is refused).
+- `links`: the header links; `{host}` is `TAILNET_HOST`.
+
+The container runs `docker compose` against this repo, bind-mounted read-only at the same absolute path as on the host.
+That keeps compose's config hashes identical to your shell's, so neither side recreates containers the other
+started. After editing `apps/switchboard/switchboard.py`: `docker compose up -d --build switchboard` (which also
+signs everyone out).
 
 ## Grafana
 Four provisioned dashboards, home is **overview**: stat tiles that link to **system** (GPU/host),
@@ -89,33 +186,43 @@ Auth is Grafana's own login. For passwordless tailnet login instead, Grafana's a
 `Tailscale-User-Login` header that `tailscale serve` adds — only safe while Grafana stays on 127.0.0.1.
 
 ## Open WebUI
-Admin → Settings → Connections: `http://vllm-gemma12:8000/v1`, `http://vllm-qwen38:8000/v1` and
-`http://vllm-qwen36moe:8000/v1` (container port, not host mapping; key anything). Ollama API off. Saved connections in the volume override the env seeds.
+Admin → Settings → Connections: one `http://<container>:8000/v1` per model service (container port, not host
+mapping; key anything), all eleven seeded by `OPENAI_API_BASE_URLS` in `apps/compose.yml`. Siblings share a served
+name but only one is up, so each model is listed once. Ollama API off. Saved connections in the volume override
+the env seeds, so add new services there by hand.
 Audio: STT Whisper (Local), TTS Web API.
 
 ## VS Code
-Chat: Manage Language Models → `chatLanguageModels.json`:
+Chat: Manage Language Models → `chatLanguageModels.json`. Each switchboard card has a copy button for this; by hand:
 
     [{ "name": "Grace", "vendor": "customendpoint", "apiType": "chat-completions",
-       "models": [{ "id": "qwen3.8-27b", "name": "Qwen3.8-27b",
-                    "url": "https://<machine>.<tailnet>.ts.net:8001/v1",
-                    "toolCalling": true, "vision": false,
-                    "maxInputTokens": 131072, "maxOutputTokens": 16000,
+       "models": [{ "id": "ornith-1.5-35b-a3b", "name": "Ornith-1.5-35B-A3B",
+                    "url": "https://<machine>.<tailnet>.ts.net:8003/v1",
+                    "toolCalling": true, "vision": true,
+                    "maxInputTokens": 246144, "maxOutputTokens": 16000,
                     "thinking": true, "supportsReasoningEffort": ["low","medium","high"],
                     "reasoningEffortFormat": "chat-completions" }] }]
 
-`id` must equal `--served-model-name`. `supportsReasoningEffort` adds a Thinking Effort submenu (the > arrow in the
-model picker); whether Qwen honours it is unverified — `--default-chat-template-kwargs '{"enable_thinking": false}'`
+`id` must equal `--served-model-name`. For Qwen3-Coder-Next: id `qwen3-coder-next`, port 8004, `thinking: false`,
+`maxInputTokens` 262144, no reasoning-effort keys (the model has no thinking mode). `supportsReasoningEffort` adds a Thinking Effort submenu (the > arrow in the
+model picker); whether the model honours it is unverified — `--default-chat-template-kwargs '{"enable_thinking": false}'`
 on the vLLM command is the lever that certainly works. First turn on a fresh workspace is a 20–40 s prefill.
 
 ## Performance (GB10)
-- Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts),
-  ~32 with the DFlash2 drafter — which needs `TRITON_ATTN` on vLLM ≤ 0.31 (prefix-cache garbling, issue #60174).
+- Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts).
   The Models dashboard's acceptance-rate panel says whether the drafter is earning its keep.
 - Never `--enforce-eager`: ~55% throughput loss on sm_121.
-- GMU: gemma 0.30, qwen38 0.45, qwen36moe 0.25. Keep the sum of running models under ~0.85, so not all three at
-  once; the overview Memory tile is the check.
-- Tool parsers: `gemma4`, `qwen3_xml`. List: `docker compose exec vllm-gemma12 vllm serve --help=all | grep -A4 tool-call-parser`.
+- GMU: gemma 0.30, ornith15 0.30 (nvfp4, agentic) or 0.72 (bf16), qwen36moe 0.25, qwen38 0.35 (nvfp4) or 0.45
+  (fp8), codernext 0.45 (nvfp4) or 0.72 (fp8), nemotron-omni 0.45, qwen35-122b 0.75. vLLM sees 121.6 GiB and
+  takes weights + ~7 GiB overhead out of GMU × that; the rest is KV cache. Keep the running sum under ~0.85, so
+  a qwen38, codernext-nvfp4 or nemotron-omni runs with at most one small model and the 0.72+ ones run alone;
+  the switchboard enforces this, the overview Memory tile is the check.
+- Nemotron Omni accepts audio too, but that needs `pip install vllm[audio]` in the image, which this stack
+  avoids (see below). Image and video in are enabled; `--kv-cache-dtype fp8` is the card's recommendation.
+- Qwen3-Coder-Next is a hybrid (Gated DeltaNet + gated attention, 512 experts, 3B active). Neither quant ships MTP
+  weights, so no speculative decoding; 3B active keeps decode quick anyway. Its KV cache is small (12 attention
+  layers, 2 KV heads), which is why 262k context fits in GMU 0.45.
+- Tool parsers: `gemma4`, `qwen3_xml`, `qwen3_coder`. List: `docker compose exec vllm-gemma12 vllm serve --help=all | grep -A4 tool-call-parser`.
 
 ## Why the vLLM image is three lines
 `vllm/vllm-openai:*-aarch64` ships vLLM, torch and FlashInfer built together. Pip-installing vLLM over an NVIDIA

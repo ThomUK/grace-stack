@@ -1,0 +1,76 @@
+{
+  "links": [
+    {
+      "name": "DGX Dashboard",
+      "url": "https://{host}:11000"
+    },
+    {
+      "name": "Grafana",
+      "url": "https://{host}:3000"
+    },
+    {
+      "name": "Open WebUI",
+      "url": "https://{host}:12000"
+    }
+  ],
+  "presets": [
+    {
+      "name": "Coding",
+      "note": "Ornith 1.5 (agentic quant) + Qwen3.6 MoE (the default set)",
+      "services": [
+        "vllm-ornith15-agentic",
+        "vllm-qwen36moe"
+      ]
+    },
+    {
+      "name": "Coder-Next + Ornith",
+      "note": "Coder-Next NVFP4 beside Ornith",
+      "services": [
+        "vllm-codernext-nvfp4",
+        "vllm-ornith15-agentic"
+      ]
+    },
+    {
+      "name": "Coder-Next solo",
+      "note": "NVFP4 quant on its own",
+      "services": [
+        "vllm-codernext-nvfp4"
+      ]
+    },
+    {
+      "name": "Coder-Next FP8 solo",
+      "note": "the 75 GiB quant; nothing else fits",
+      "services": [
+        "vllm-codernext-fp8"
+      ]
+    },
+    {
+      "name": "Chat",
+      "note": "Gemma 4 (audio in) + Ornith",
+      "services": [
+        "vllm-gemma12",
+        "vllm-ornith15-agentic"
+      ]
+    },
+    {
+      "name": "Omni + Ornith",
+      "note": "Nemotron Omni (image/video in) beside Ornith",
+      "services": [
+        "vllm-nemotron-omni",
+        "vllm-ornith15-agentic"
+      ]
+    },
+    {
+      "name": "Qwen3.5-122B solo",
+      "note": "the big MoE; nothing else fits",
+      "services": [
+        "vllm-qwen35-122b"
+      ]
+    },
+    {
+      "name": "All off",
+      "note": "free the memory",
+      "services": []
+    }
+  ]
+}

@@ -8,10 +8,26 @@ scrape_configs:
     static_configs:
       - targets: [vllm-gemma12:8000]
         labels: { service: vllm-gemma12 }
-      - targets: [vllm-qwen38:8000]
-        labels: { service: vllm-qwen38 }
+      - targets: [vllm-qwen38-nvfp4:8000]
+        labels: { service: vllm-qwen38-nvfp4 }
+      - targets: [vllm-qwen38-fp8:8000]
+        labels: { service: vllm-qwen38-fp8 }
       - targets: [vllm-qwen36moe:8000]
         labels: { service: vllm-qwen36moe }
+      - targets: [vllm-ornith15-nvfp4:8000]
+        labels: { service: vllm-ornith15-nvfp4 }
+      - targets: [vllm-ornith15-agentic:8000]
+        labels: { service: vllm-ornith15-agentic }
+      - targets: [vllm-ornith15-bf16:8000]
+        labels: { service: vllm-ornith15-bf16 }
+      - targets: [vllm-codernext-nvfp4:8000]
+        labels: { service: vllm-codernext-nvfp4 }
+      - targets: [vllm-codernext-fp8:8000]
+        labels: { service: vllm-codernext-fp8 }
+      - targets: [vllm-qwen35-122b:8000]
+        labels: { service: vllm-qwen35-122b }
+      - targets: [vllm-nemotron-omni:8000]
+        labels: { service: vllm-nemotron-omni }
 
   - job_name: dcgm
     static_configs:
