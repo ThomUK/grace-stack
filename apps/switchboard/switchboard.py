@@ -640,7 +640,7 @@ function render(){
     k.ms.push(m);
   }
   $('models').innerHTML = makers.map(k => `
-    <details class="maker" ${openMakers.has(k.name)?'open':''} ontoggle="this.open ? openMakers.add(${JSON.stringify(k.name)}) : openMakers.delete(${JSON.stringify(k.name)})">
+    <details class="maker" data-maker="${esc(k.name)}" ${openMakers.has(k.name)?'open':''} ontoggle="this.open ? openMakers.add(this.dataset.maker) : openMakers.delete(this.dataset.maker)">
       <summary><img class="logo" src="${esc(k.logo.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">${esc(k.name)}
         <span class="sub">· ${k.ms.length} variant${k.ms.length>1?'s':''}</span>
         <span class="dots">${k.ms.map(m => `<i class="dot ${m.status}" title="${esc(m.service)} · ${esc(m.status)}"></i>`).join('')}</span></summary>
