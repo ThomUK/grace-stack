@@ -1,6 +1,10 @@
 {
   "links": [
     {
+      "name": "DGX Dashboard",
+      "url": "https://{host}:11000"
+    },
+    {
       "name": "Grafana",
       "url": "https://{host}:3000"
     },

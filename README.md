@@ -51,6 +51,7 @@ Ports on 127.0.0.1 are fronted by `tailscale serve`; a `0.0.0.0` bind on a port 
     sudo tailscale serve --bg --https=8003  http://127.0.0.1:8003    # ornith15 API
     sudo tailscale serve --bg --https=8004  http://127.0.0.1:8004    # codernext API
     sudo tailscale serve --bg --https=8080  http://127.0.0.1:8080    # switchboard
+    sudo tailscale serve --bg --https=11000 http://127.0.0.1:11000   # NVIDIA DGX Dashboard (system updates, settings)
 
 URLs: `https://<machine>.<tailnet>.ts.net:<port>`, the name you set as `TAILNET_HOST`. HTTPS is bound to that
 name (mic in Open WebUI needs it).
@@ -76,7 +77,8 @@ A container that exists but lost its port mapping needs `up -d --force-recreate 
 
 ## Switchboard
 `https://<machine>.<tailnet>.ts.net:8080`: one card per vLLM service with start / stop / restart / logs, presets
-that switch whole sets (stop what is not wanted, then start the rest), and links to Grafana and Open WebUI.
+that switch whole sets (stop what is not wanted, then start the rest), and links to the NVIDIA DGX Dashboard
+(OS updates and settings, port 11000 on the host), Grafana and Open WebUI.
 It discovers the models from `docker compose config`, so a new `vllm serve` service in `models/compose.yml`
 appears by itself; the memory fraction shown is the service's `--gpu-memory-utilization`. It refuses any start
 that would take the running sum above `MAX_GMU` (.env, default 0.85). A model stopped there stays stopped across
