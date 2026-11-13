@@ -85,15 +85,18 @@ Plain `up -d` never rebuilds an image and never touches a model (they are all be
 A container that exists but lost its port mapping needs `up -d --force-recreate <service>`.
 
 ## Switchboard
-`https://<machine>.<tailnet>.ts.net:8080`: one card per vLLM service with start / stop / restart / logs, presets
-that switch whole sets (stop what is not wanted, then start the rest), and links to the NVIDIA DGX Dashboard
-(OS updates and settings, port 11000 on the host), Grafana and Open WebUI.
+`https://<machine>.<tailnet>.ts.net:8080`: a **Running** strip (what is up, with stop / restart / logs), presets
+that switch whole sets (stop what is not wanted, then start the rest), one collapsed section per model maker
+holding a card per vLLM service, and links to the NVIDIA DGX Dashboard (OS updates and settings, port 11000 on
+the host), Grafana and Open WebUI. A maker's summary line shows its logo, how many variants it has and one
+status dot per variant; sections stay collapsed until opened, and toggles persist for the page session.
 It discovers the models from `docker compose config`, so a new `vllm serve` service in `models/compose.yml`
 appears by itself; the memory fraction shown is the service's `--gpu-memory-utilization`. It refuses any start
 that would take the running sum above `MAX_GMU` (.env, default 0.85). Siblings (same host port) are shown
 together; while one holds the port the others offer **swap**, which stops the holder and starts the chosen one.
-Each card carries the maker's logo (its Hugging Face org avatar) and links the model id to its origin card (and
-the drafter's, where spec decoding loads one), so what is being served is one click from where it came from.
+Each card carries the maker's logo (its Hugging Face org avatar) and, when the repo owner is a different org,
+the quantiser's logo next to it. The model id links to its origin card (and the drafter's, where spec decoding
+loads one), so what is being served is one click from where it came from.
 Under that: size on disk, weights in memory (the snapshot's safetensors bytes, which is what vLLM reports as
 "Model loading took" before any KV cache), and max context. Sizes come from `~/.cache/huggingface`, mounted
 read-only into the container; a model not yet downloaded says so.
@@ -110,8 +113,9 @@ Per-model metadata is compose `labels` on the service, next to the command it de
   `--limit-mm-per-prompt`, `maxInputTokens` = `--max-model-len` minus 16000).
 - `switchboard.vision: "true"`: for a multimodal model that has no `--limit-mm-per-prompt` flag.
 - `switchboard.card`: origin URL, when the weights are not a Hugging Face repo.
-- `switchboard.logo`: Hugging Face org whose avatar to show, when the repo owner is not the model's maker
-  (a RedHatAI or nvidia quant of a Qwen model says `Qwen`).
+- `switchboard.logo`: Hugging Face org of the model's maker, when the repo owner is only the quantiser (a RedHatAI
+  or nvidia quant of a Qwen model says `Qwen`). Both avatars are shown, and the maker decides which section the
+  card sits in.
 
 `apps/switchboard/switchboard.json`, re-read on every request, holds the rest:
 - `presets`: named sets of services (a preset naming two siblings is refused).

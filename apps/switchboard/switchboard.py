@@ -11,7 +11,9 @@ drafter): only one can run at a time, and a sibling's card offers "swap" (stop t
 start this one). Per-service compose labels: switchboard.name (VS Code display name),
 switchboard.note (card text), switchboard.vision ("true" when no --limit-mm-per-prompt
 gives it away), switchboard.card (origin URL; default https://huggingface.co/<repo>),
-switchboard.logo (Hugging Face org whose avatar is the card logo; default the repo owner).
+switchboard.logo (Hugging Face org of the model's maker when the repo owner is only the
+quantiser; the card then shows both avatars, maker first). Cards are grouped per maker in
+collapsed <details>; a Running strip above the presets lists what is up.
 Each card also shows the snapshot's size on disk and its safetensors bytes (what the weights
 take in memory before KV cache), read from the HF cache mounted read-only at HF_HUB_CACHE.
 
@@ -238,8 +240,10 @@ def snapshot():
         m["detail"] = status
         m["url"] = f"https://{TAILNET_HOST}:{m['port']}/v1" if TAILNET_HOST and m["port"] else f"http://127.0.0.1:{m['port']}/v1"
         m["note"] = m["labels"].get("switchboard.note", "")
-        org = m["labels"].get("switchboard.logo") or m["model"].split("/")[0]
-        m["logo"] = f"https://huggingface.co/api/organizations/{org}/avatar?redirect=true"
+        owner = m["model"].split("/")[0]
+        m["maker"] = m["labels"].get("switchboard.logo") or owner
+        m["logos"] = [{"name": o, "url": f"https://huggingface.co/api/organizations/{o}/avatar?redirect=true"}
+                      for o in dict.fromkeys([m["maker"], owner])]      # maker first, quantiser if different
         sizes = hf_sizes(m["model"])
         m["disk_gib"], m["weights_gib"] = (gib(sizes[0]), gib(sizes[1])) if sizes else (None, None)
         m["origin"] = [{"name": n, "url": u} for n, u in origin_links(m)]
@@ -490,13 +494,21 @@ PAGE = r"""<!doctype html>
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px }
   .card .name { font-weight:600; font-size:16px; display:flex; align-items:center; gap:8px }
   .dot { width:10px; height:10px; border-radius:50%; background:var(--down); flex:none }
-  .up .dot { background:var(--up) } .loading .dot { background:var(--load); animation:pulse 1s infinite alternate } .unhealthy .dot { background:var(--bad) }
+  .up .dot, .dot.up { background:var(--up) } .loading .dot, .dot.loading { background:var(--load); animation:pulse 1s infinite alternate } .unhealthy .dot, .dot.unhealthy { background:var(--bad) }
+  .dots { display:inline-flex; gap:4px; margin-left:8px; vertical-align:middle } .dots .dot { width:9px; height:9px }
+  .run { display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin-bottom:6px }
+  .run b { font-size:15px } .spacer { flex:1 }
+  details.maker { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin:0 0 10px }
+  details.maker > summary { color:var(--fg); font-size:15px; font-weight:600 } details.maker > summary .sub { font-weight:400 }
+  details.maker > summary img { vertical-align:middle; margin-right:6px }
+  details.maker > .grid { margin-top:12px }
   @keyframes pulse { from { opacity:.4 } to { opacity:1 } }
   .meta { color:var(--dim); font-size:12.5px; margin:6px 0 10px; word-break:break-all }
   .meta code { color:var(--fg); font-size:12px }
   .meta a { color:var(--accent); text-decoration:none } .meta a:hover { text-decoration:underline }
   .note { color:var(--dim); font-size:12.5px; margin:-4px 0 10px }
   .logo { width:22px; height:22px; border-radius:5px; object-fit:cover; flex:none; background:#ffffff12 }
+  .logo + .logo { margin-left:-4px }
   .stats { display:flex; gap:6px 16px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); margin:0 0 10px }
   .stats b { color:var(--fg); font-weight:600 }
   .group { grid-column:1 / -1; border:1px dashed var(--line); border-radius:12px; padding:10px 12px 12px }
@@ -521,15 +533,17 @@ PAGE = r"""<!doctype html>
 <div class="bar" id="bar"><i style="width:0"></i><b></b></div>
 <div class="sub" id="gmu"></div>
 
+<h2>Running</h2><div id="running"></div>
 <h2>Presets</h2><div class="presets" id="presets"></div>
-<h2>Models</h2><div class="grid" id="models"></div>
+<h2>Models</h2><div id="models"></div>
 <h2>Activity</h2><div id="jobs"></div>
 <h2 id="logtitle" style="display:none">Logs</h2><pre id="logs" style="display:none"></pre>
 <div id="toast"></div>
 <script>
 const $ = (id) => document.getElementById(id);
 let state = null, logService = null;
-const openDetails = new Set();
+const openDetails = new Set(), openMakers = new Set();
+const logos = (m) => m.logos.map(l => `<img class="logo" src="${esc(l.url)}" alt="" title="${esc(l.name)}" loading="lazy" onerror="this.style.visibility='hidden'">`).join('');
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 3500); }
 async function api(path, body){
@@ -570,7 +584,7 @@ function render(){
          <span class="sub">:${esc(m.port)} is held by ${esc(m.held_by)}</span>`
       : `<button class="primary" ${(busy||!fits)?'disabled':''} title="${fits?'':'would exceed MAX_GMU'}" onclick="act('/api/start',{service:'${m.service}'})">${fits?'start':'start (no room)'}</button>`;
     return `<div class="card ${m.status}">
-      <div class="name"><img class="logo" src="${esc(m.logo)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"><span class="dot"></span>${esc(m.service)} <span class="sub" style="font-weight:400">· ${esc(m.status)}</span></div>
+      <div class="name">${logos(m)}<span class="dot"></span>${esc(m.service)} <span class="sub" style="font-weight:400">· ${esc(m.status)}</span></div>
       <div class="meta">${origin}<br>served as <code>${esc(m.served)}</code> · GMU ${m.gmu.toFixed(2)}<br><code>${esc(m.url)}</code><br>${esc(m.detail)}</div>
       <div class="stats">
         <span><b>${m.disk_gib == null ? 'not downloaded' : m.disk_gib.toFixed(1) + ' GiB'}</b> on disk</span>
@@ -596,17 +610,42 @@ function render(){
         <pre id="vse-${m.service}" hidden>${esc(m.vscode_entry)}</pre>
       </details>
     </div>`;};
+  // running strip: what is up right now, with the quick actions
+  const live = s.models.filter(m => m.status !== 'down');
+  $('running').innerHTML = live.length ? live.map(m => `
+    <div class="run ${m.status}">${logos(m)}<span class="dot"></span><b>${esc(m.service)}</b>
+      <span class="sub">${esc(m.status)} · <code>${esc(m.served)}</code> · GMU ${m.gmu.toFixed(2)} · ${esc(m.detail)}</span><span class="spacer"></span>
+      <button class="danger small" ${busy?'disabled':''} onclick="act('/api/stop',{service:'${m.service}'}, 'Stop ${m.service}? Reload takes ~4 min.')">stop</button>
+      <button class="small" ${busy?'disabled':''} onclick="act('/api/restart',{service:'${m.service}'}, 'Restart ${m.service}?')">restart</button>
+      <button class="small" onclick="showLogs('${m.service}')">logs</button>
+    </div>`).join('') : '<div class="sub">nothing running</div>';
   // siblings (same host port) sit together in a full-width group; one of them at a time
-  const groups = [];
+  const groupsHtml = (ms) => {
+    const groups = [];
+    for (const m of ms) {
+      const g = groups.length && groups[groups.length-1].port === m.port ? groups[groups.length-1] : (groups.push({port: m.port, ms: []}), groups[groups.length-1]);
+      g.ms.push(m);
+    }
+    return groups.map(g => g.ms.length === 1 ? card(g.ms[0]) : `
+      <div class="group">
+        <div class="ghead">served as <code>${esc(g.ms[0].served)}</code> on :${esc(g.port)} · ${g.ms.length} variants, one at a time</div>
+        <div class="grid">${g.ms.map(card).join('')}</div>
+      </div>`).join('');
+  };
+  // one collapsed section per model maker (first logo), in port order of first appearance
+  const makers = [];
   for (const m of s.models) {
-    const g = groups.length && groups[groups.length-1].port === m.port ? groups[groups.length-1] : (groups.push({port: m.port, ms: []}), groups[groups.length-1]);
-    g.ms.push(m);
+    let k = makers.find(x => x.name === m.maker);
+    if (!k) makers.push(k = {name: m.maker, logo: m.logos[0], ms: []});
+    k.ms.push(m);
   }
-  $('models').innerHTML = groups.map(g => g.ms.length === 1 ? card(g.ms[0]) : `
-    <div class="group">
-      <div class="ghead">served as <code>${esc(g.ms[0].served)}</code> on :${esc(g.port)} · ${g.ms.length} variants, one at a time</div>
-      <div class="grid">${g.ms.map(card).join('')}</div>
-    </div>`).join('');
+  $('models').innerHTML = makers.map(k => `
+    <details class="maker" ${openMakers.has(k.name)?'open':''} ontoggle="this.open ? openMakers.add(${JSON.stringify(k.name)}) : openMakers.delete(${JSON.stringify(k.name)})">
+      <summary><img class="logo" src="${esc(k.logo.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">${esc(k.name)}
+        <span class="sub">· ${k.ms.length} variant${k.ms.length>1?'s':''}</span>
+        <span class="dots">${k.ms.map(m => `<i class="dot ${m.status}" title="${esc(m.service)} · ${esc(m.status)}"></i>`).join('')}</span></summary>
+      <div class="grid">${groupsHtml(k.ms)}</div>
+    </details>`).join('');
   const jobs = [];
   if (s.job) jobs.push(`<div class="job"><span class="busy">⟳ ${esc(s.job.title)}</span><span>${Math.round(Date.now()/1000 - s.job.started)} s</span></div>`);
   for (const j of s.history) jobs.push(`<div class="job"><span class="${j.ok?'ok':'fail'}">${j.ok?'✓':'✗'} ${esc(j.title)}</span><span>${new Date(j.finished*1000).toLocaleTimeString()} · ${j.seconds} s</span></div>` + (j.ok && j.output==='ok' ? '' : `<pre>${esc(j.output)}</pre>`));
