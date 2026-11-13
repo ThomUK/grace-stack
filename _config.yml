@@ -1,0 +1,22 @@
+# GitHub Pages: README.md is the home page, docs/*.md are pages, relative links between them are rewritten.
+# Built by GitHub's own Jekyll on push to main; nothing to run locally.
+title: grace-stack
+description: A self-hosted LLM stack for one NVIDIA GB10 box — vLLM, a switchboard, Open WebUI, Grafana, behind Tailscale
+theme: jekyll-theme-minimal
+show_downloads: false
+
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: true
+
+include:
+  - docs
+exclude:
+  - apps
+  - models
+  - monitoring
+  - docker-compose.yml
+  - LICENSE
+  - .env.example
