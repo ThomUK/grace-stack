@@ -18,10 +18,12 @@ and list only those in `docker-compose.yml`.
 | module     | service        | port                 | notes |
 |------------|----------------|----------------------|-------|
 | models     | vllm-gemma12   | 127.0.0.1:8000       | gemma-4-12b-it as `gemma4-12b`; audio in |
-| models     | vllm-qwen38-nvfp4 ╷ -fp8 ╷ -dflash | 127.0.0.1:8001 | Qwen3.8-27B as `qwen3.8-27b`: nvidia NVFP4 + MTP, Qwen FP8 + MTP, or FP8 + DFlash2 drafter; one at a time |
+| models     | vllm-qwen38-nvfp4 ╷ -fp8 | 127.0.0.1:8001 | Qwen3.8-27B as `qwen3.8-27b`: nvidia NVFP4 or Qwen FP8, both with MTP; one at a time |
 | models     | vllm-qwen36moe | 127.0.0.1:8002       | Qwen3.6-35B-A3B-NVFP4 as `qwen3.6-35b-a3b`; MTP spec decode |
-| models     | vllm-ornith15-nvfp4 ╷ -agentic | 127.0.0.1:8003 | Ornith-1.5-35B-A3B as `ornith-1.5-35b-a3b`: ornith-ai NVFP4 or primitive-ai agentic NVFP4-FP8; one at a time |
+| models     | vllm-ornith15-nvfp4 ╷ -agentic ╷ -bf16 | 127.0.0.1:8003 | Ornith-1.5-35B-A3B as `ornith-1.5-35b-a3b`: ornith-ai NVFP4, primitive-ai agentic NVFP4-FP8, or the unquantised bf16 (GMU 0.72, runs alone); one at a time |
 | models     | vllm-codernext-nvfp4 ╷ -fp8 | 127.0.0.1:8004 | Qwen3-Coder-Next 80B-A3B as `qwen3-coder-next`: RedHatAI NVFP4 (GMU 0.45) or Qwen FP8 (0.72, runs alone); non-thinking; one at a time |
+| models     | vllm-qwen35-122b | 127.0.0.1:8005     | Qwen3.5-122B-A10B RedHatAI NVFP4 as `qwen3.5-122b-a10b`; vision in; MTP; GMU 0.75, runs alone |
+| models     | vllm-nemotron-omni | 127.0.0.1:8006   | Nemotron 3 Nano Omni 30B-A3B FP8 as `nemotron-3-nano-omni-30b-a3b`; image + video in; reasoning; GMU 0.45 |
 | apps       | open-webui     | 127.0.0.1:12000      | data in external volume `open-webui` |
 | apps       | switchboard    | 127.0.0.1:8080       | start/stop models and presets; holds the Docker socket |
 | monitoring | grafana        | 127.0.0.1:3000       | the dashboards; login from .env |
@@ -54,6 +56,8 @@ Ports on 127.0.0.1 are fronted by `tailscale serve`; a `0.0.0.0` bind on a port 
     sudo tailscale serve --bg --https=8002  http://127.0.0.1:8002    # qwen36moe API
     sudo tailscale serve --bg --https=8003  http://127.0.0.1:8003    # ornith15 API
     sudo tailscale serve --bg --https=8004  http://127.0.0.1:8004    # codernext API
+    sudo tailscale serve --bg --https=8005  http://127.0.0.1:8005    # qwen3.5-122b API
+    sudo tailscale serve --bg --https=8006  http://127.0.0.1:8006    # nemotron omni API
     sudo tailscale serve --bg --https=8080  http://127.0.0.1:8080    # switchboard
     sudo tailscale serve --bg --https=11000 http://127.0.0.1:11000   # NVIDIA DGX Dashboard (system updates, settings)
 
@@ -88,8 +92,16 @@ It discovers the models from `docker compose config`, so a new `vllm serve` serv
 appears by itself; the memory fraction shown is the service's `--gpu-memory-utilization`. It refuses any start
 that would take the running sum above `MAX_GMU` (.env, default 0.85). Siblings (same host port) are shown
 together; while one holds the port the others offer **swap**, which stops the holder and starts the chosen one.
-Each card links the model id to its origin card on Hugging Face (and the drafter's, where spec decoding loads
-one), so what is being served is one click from where it came from.
+Each card carries the maker's logo (its Hugging Face org avatar) and links the model id to its origin card (and
+the drafter's, where spec decoding loads one), so what is being served is one click from where it came from.
+Under that: size on disk, weights in memory (the snapshot's safetensors bytes, which is what vLLM reports as
+"Model loading took" before any KV cache), and max context. Sizes come from `~/.cache/huggingface`, mounted
+read-only into the container; a model not yet downloaded says so.
+
+Models start **one at a time**. Two loading together each measure the shared GB10 pool while the other is
+still allocating, and one ends up with "No available memory for the cache blocks". A preset therefore starts
+its services in sequence, waiting for each to turn healthy (~4 min), and start / swap are refused while
+anything is still loading.
 
 Per-model metadata is compose `labels` on the service, next to the command it describes:
 - `switchboard.note`: one line on the card (who made the quant, size, drafter).
@@ -98,6 +110,8 @@ Per-model metadata is compose `labels` on the service, next to the command it de
   `--limit-mm-per-prompt`, `maxInputTokens` = `--max-model-len` minus 16000).
 - `switchboard.vision: "true"`: for a multimodal model that has no `--limit-mm-per-prompt` flag.
 - `switchboard.card`: origin URL, when the weights are not a Hugging Face repo.
+- `switchboard.logo`: Hugging Face org whose avatar to show, when the repo owner is not the model's maker
+  (a RedHatAI or nvidia quant of a Qwen model says `Qwen`).
 
 `apps/switchboard/switchboard.json`, re-read on every request, holds the rest:
 - `presets`: named sets of services (a preset naming two siblings is refused).
@@ -127,7 +141,7 @@ Auth is Grafana's own login. For passwordless tailnet login instead, Grafana's a
 
 ## Open WebUI
 Admin → Settings → Connections: one `http://<container>:8000/v1` per model service (container port, not host
-mapping; key anything), all nine seeded by `OPENAI_API_BASE_URLS` in `apps/compose.yml`. Siblings share a served
+mapping; key anything), all eleven seeded by `OPENAI_API_BASE_URLS` in `apps/compose.yml`. Siblings share a served
 name but only one is up, so each model is listed once. Ollama API off. Saved connections in the volume override
 the env seeds, so add new services there by hand.
 Audio: STT Whisper (Local), TTS Web API.
@@ -149,13 +163,16 @@ model picker); whether the model honours it is unverified — `--default-chat-te
 on the vLLM command is the lever that certainly works. First turn on a fresh workspace is a 20–40 s prefill.
 
 ## Performance (GB10)
-- Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts),
-  ~32 with the DFlash2 drafter — which needs `TRITON_ATTN` on vLLM ≤ 0.31 (prefix-cache garbling, issue #60174).
+- Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts).
   The Models dashboard's acceptance-rate panel says whether the drafter is earning its keep.
 - Never `--enforce-eager`: ~55% throughput loss on sm_121.
-- GMU: gemma 0.30, ornith15 0.30, qwen36moe 0.25, qwen38 0.35 (nvfp4) or 0.45 (fp8, dflash), codernext 0.45
-  (nvfp4) or 0.72 (fp8). Keep the sum of running models under ~0.85, so a qwen38 or codernext-nvfp4 runs with at
-  most one of the others and codernext-fp8 runs alone; the switchboard enforces this, the overview Memory tile is the check.
+- GMU: gemma 0.30, ornith15 0.30 (nvfp4, agentic) or 0.72 (bf16), qwen36moe 0.25, qwen38 0.35 (nvfp4) or 0.45
+  (fp8), codernext 0.45 (nvfp4) or 0.72 (fp8), nemotron-omni 0.45, qwen35-122b 0.75. vLLM sees 121.6 GiB and
+  takes weights + ~7 GiB overhead out of GMU × that; the rest is KV cache. Keep the running sum under ~0.85, so
+  a qwen38, codernext-nvfp4 or nemotron-omni runs with at most one small model and the 0.72+ ones run alone;
+  the switchboard enforces this, the overview Memory tile is the check.
+- Nemotron Omni accepts audio too, but that needs `pip install vllm[audio]` in the image, which this stack
+  avoids (see below). Image and video in are enabled; `--kv-cache-dtype fp8` is the card's recommendation.
 - Qwen3-Coder-Next is a hybrid (Gated DeltaNet + gated attention, 512 experts, 3B active). Neither quant ships MTP
   weights, so no speculative decoding; 3B active keeps decode quick anyway. Its KV cache is small (12 attention
   layers, 2 KV heads), which is why 262k context fits in GMU 0.45.

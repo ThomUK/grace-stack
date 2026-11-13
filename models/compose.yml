@@ -3,15 +3,21 @@
 # One service per model *variant*. Siblings share a host port and a served name, so clients never
 # notice which quant is behind it; only one sibling can run at a time (the switchboard offers "swap").
 #
-#   :8000  gemma4-12b          vllm-gemma12            google, bf16            GMU 0.30  chat, audio in
-#   :8001  qwen3.8-27b         vllm-qwen38-nvfp4       nvidia modelopt NVFP4   GMU 0.35  dense coder, MTP 3 drafts (~17 tok/s)
-#                              vllm-qwen38-fp8         Qwen FP8                GMU 0.45  MTP 3 drafts
-#                              vllm-qwen38-dflash      Qwen FP8 + DFlash2      GMU 0.45  7 drafts (~32 tok/s), TRITON_ATTN until vLLM > 0.31
-#   :8002  qwen3.6-35b-a3b     vllm-qwen36moe          RedHatAI NVFP4          GMU 0.25  MoE coder
-#   :8003  ornith-1.5-35b-a3b  vllm-ornith15-nvfp4     ornith-ai NVFP4         GMU 0.30  MoE coder, the default
-#                              vllm-ornith15-agentic   primitive-ai NVFP4-FP8  GMU 0.30  GPTQ-calibrated on tool calls
-#   :8004  qwen3-coder-next    vllm-codernext-nvfp4    RedHatAI NVFP4          GMU 0.45  80B-A3B, non-thinking
-#                              vllm-codernext-fp8      Qwen FP8                GMU 0.72  runs alone
+#   :8000  gemma4-12b                   vllm-gemma12            google bf16             GMU 0.30  chat, audio in
+#   :8001  qwen3.8-27b                  vllm-qwen38-nvfp4       nvidia modelopt NVFP4   GMU 0.35  dense coder, MTP 3 drafts (~17 tok/s)
+#                                       vllm-qwen38-fp8         Qwen FP8                GMU 0.45  MTP 3 drafts
+#   :8002  qwen3.6-35b-a3b              vllm-qwen36moe          RedHatAI NVFP4          GMU 0.25  MoE coder
+#   :8003  ornith-1.5-35b-a3b           vllm-ornith15-nvfp4     ornith-ai NVFP4         GMU 0.30  MoE coder
+#                                       vllm-ornith15-agentic   primitive-ai NVFP4-FP8  GMU 0.30  GPTQ-calibrated on tool calls (the default)
+#                                       vllm-ornith15-bf16      ornith-ai bf16, 67 GiB  GMU 0.72  unquantised reference; runs alone
+#   :8004  qwen3-coder-next             vllm-codernext-nvfp4    RedHatAI NVFP4          GMU 0.45  80B-A3B, non-thinking
+#                                       vllm-codernext-fp8      Qwen FP8                GMU 0.72  runs alone
+#   :8005  qwen3.5-122b-a10b            vllm-qwen35-122b        RedHatAI NVFP4, 71 GiB  GMU 0.75  biggest MoE here, vision; runs alone
+#   :8006  nemotron-3-nano-omni-30b-a3b vllm-nemotron-omni      nvidia FP8, 33 GiB      GMU 0.45  image + video in, reasoning
+#
+# Memory: vLLM sees 121.6 GiB. Weights + ~7 GiB of runtime overhead come out of GMU × 121.6; the rest is
+# KV cache ("Available KV cache memory" in the container log). Start models one at a time: two loading at
+# once mismeasure the shared pool and one of them ends up with no KV cache (the switchboard serialises this).
 #
 # Every service is behind a profile named after it (minus `vllm-`), so a plain `docker compose up -d`
 # leaves models alone: start them from the switchboard, or `docker compose --profile X up -d vllm-X`.
@@ -19,9 +25,9 @@
 #
 # Labels read by the switchboard:  switchboard.note (card text), switchboard.name (VS Code display name),
 # switchboard.vision ("true" when there is no --limit-mm-per-prompt to infer it from),
-# switchboard.card (origin URL; default https://huggingface.co/<repo>).
+# switchboard.card (origin URL; default https://huggingface.co/<repo>),
+# switchboard.logo (Hugging Face org whose avatar is the card's logo; default the repo's owner).
 #
-# One memory pool. GMU fractions of running models must sum < MAX_GMU (.env, default 0.85).
 # Ports bind to loopback; expose with `tailscale serve`, not the LAN.
 
 x-vllm: &vllm
@@ -72,8 +78,9 @@ services:
     ports: ["127.0.0.1:8001:8000"]
     labels:
       switchboard.name: "Qwen3.8-27B"
+      switchboard.logo: "Qwen"
       switchboard.vision: "true"
-      switchboard.note: "nvidia modelopt quant, 21 GiB; built-in MTP, 3 drafts (~17 tok/s)"
+      switchboard.note: "nvidia modelopt quant; built-in MTP, 3 drafts (~17 tok/s)"
     command: >
       vllm serve nvidia/Qwen3.8-27B-NVFP4
       --served-model-name qwen3.8-27b
@@ -95,7 +102,7 @@ services:
     labels:
       switchboard.name: "Qwen3.8-27B"
       switchboard.vision: "true"
-      switchboard.note: "Qwen official FP8, 29 GiB; built-in MTP, 3 drafts (~17 tok/s)"
+      switchboard.note: "Qwen official FP8; built-in MTP, 3 drafts (~17 tok/s)"
     command: >
       vllm serve Qwen/Qwen3.8-27B-FP8
       --served-model-name qwen3.8-27b
@@ -109,28 +116,6 @@ services:
       --reasoning-parser qwen3
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
 
-  vllm-qwen38-dflash:
-    <<: *vllm
-    profiles: [qwen38-dflash]
-    container_name: vllm-qwen38-dflash
-    ports: ["127.0.0.1:8001:8000"]
-    labels:
-      switchboard.name: "Qwen3.8-27B"
-      switchboard.vision: "true"
-      switchboard.note: "Qwen official FP8 + z-lab DFlash2 drafter, 7 drafts (~32 tok/s); TRITON_ATTN until vLLM > 0.31 (prefix-cache garbling, issue #60174)"
-    command: >
-      vllm serve Qwen/Qwen3.8-27B-FP8
-      --served-model-name qwen3.8-27b
-      --host 0.0.0.0 --port 8000
-      --max-model-len 131072
-      --max-num-seqs 4
-      --gpu-memory-utilization 0.45
-      --enable-prefix-caching
-      --enable-auto-tool-choice
-      --tool-call-parser qwen3_xml
-      --reasoning-parser qwen3
-      --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2","num_speculative_tokens":7,"attention_backend":"TRITON_ATTN"}'
-
   # ---------------------------------------------------------------- :8002 qwen3.6-35b-a3b
   vllm-qwen36moe:
     <<: *vllm
@@ -139,6 +124,7 @@ services:
     ports: ["127.0.0.1:8002:8000"]
     labels:
       switchboard.name: "Qwen3.6-35B-A3B"
+      switchboard.logo: "Qwen"
       switchboard.vision: "true"
       switchboard.note: "RedHatAI NVFP4; MoE, 3B active; built-in MTP, 3 drafts"
     command: >
@@ -163,7 +149,7 @@ services:
     labels:
       switchboard.name: "Ornith-1.5-35B-A3B"
       switchboard.vision: "true"
-      switchboard.note: "ornith-ai official modelopt quant, 21.8 GiB; MoE, 3B active; MTP 1 draft"
+      switchboard.note: "ornith-ai official modelopt quant; MoE, 3B active; MTP 1 draft"
     command: >
       vllm serve ornith-ai/Ornith-1.5-35B-A3B-NVFP4
       --served-model-name ornith-1.5-35b-a3b
@@ -185,8 +171,9 @@ services:
     ports: ["127.0.0.1:8003:8000"]
     labels:
       switchboard.name: "Ornith-1.5-35B-A3B"
+      switchboard.logo: "ornith-ai"
       switchboard.vision: "true"
-      switchboard.note: "primitive-ai third-party quant, GPTQ-calibrated on tool calls, 22.6 GiB; MTP 1 draft"
+      switchboard.note: "primitive-ai third-party quant, GPTQ-calibrated on tool calls; MTP 1 draft"
     command: >
       vllm serve primitive-ai/Ornith-1.5-35B-A3B-agentic-NVFP4-FP8
       --served-model-name ornith-1.5-35b-a3b
@@ -194,6 +181,29 @@ services:
       --max-model-len 262144
       --max-num-seqs 4
       --gpu-memory-utilization 0.30
+      --override-generation-config '{"temperature": 0.6}'
+      --enable-prefix-caching
+      --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --reasoning-parser qwen3
+
+  vllm-ornith15-bf16:
+    <<: *vllm
+    profiles: [ornith15-bf16]
+    container_name: vllm-ornith15-bf16
+    ports: ["127.0.0.1:8003:8000"]
+    labels:
+      switchboard.name: "Ornith-1.5-35B-A3B"
+      switchboard.vision: "true"
+      switchboard.note: "unquantised bf16 reference the NVFP4 quants were made from; runs alone. MTP 1 draft"
+    command: >
+      vllm serve ornith-ai/Ornith-1.5-35B-A3B
+      --served-model-name ornith-1.5-35b-a3b
+      --host 0.0.0.0 --port 8000
+      --max-model-len 262144
+      --max-num-seqs 4
+      --gpu-memory-utilization 0.72
       --override-generation-config '{"temperature": 0.6}'
       --enable-prefix-caching
       --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
@@ -209,7 +219,8 @@ services:
     ports: ["127.0.0.1:8004:8000"]
     labels:
       switchboard.name: "Qwen3-Coder-Next"
-      switchboard.note: "RedHatAI NVFP4, 44 GiB; fits beside one other model. No MTP weights, so no spec decode"
+      switchboard.logo: "Qwen"
+      switchboard.note: "RedHatAI NVFP4; fits beside one other model. No MTP weights, so no spec decode"
     command: >
       vllm serve RedHatAI/Qwen3-Coder-Next-NVFP4
       --served-model-name qwen3-coder-next
@@ -229,7 +240,7 @@ services:
     ports: ["127.0.0.1:8004:8000"]
     labels:
       switchboard.name: "Qwen3-Coder-Next"
-      switchboard.note: "Qwen official FP8, 75 GiB; runs alone. No MTP weights, so no spec decode"
+      switchboard.note: "Qwen official FP8; runs alone. No MTP weights, so no spec decode"
     command: >
       vllm serve Qwen/Qwen3-Coder-Next-FP8
       --served-model-name qwen3-coder-next
@@ -241,6 +252,58 @@ services:
       --enable-prefix-caching
       --enable-auto-tool-choice
       --tool-call-parser qwen3_coder
+
+  # ---------------------------------------------------------------- :8005 qwen3.5-122b-a10b (opt-in; runs alone)
+  vllm-qwen35-122b:
+    <<: *vllm
+    profiles: [qwen35-122b]
+    container_name: vllm-qwen35-122b
+    ports: ["127.0.0.1:8005:8000"]
+    labels:
+      switchboard.name: "Qwen3.5-122B-A10B"
+      switchboard.logo: "Qwen"
+      switchboard.vision: "true"
+      switchboard.note: "RedHatAI NVFP4 of the 122B MoE (10B active), vision in; MTP 2 drafts; runs alone"
+    command: >
+      vllm serve RedHatAI/Qwen3.5-122B-A10B-NVFP4
+      --served-model-name qwen3.5-122b-a10b
+      --host 0.0.0.0 --port 8000
+      --max-model-len 262144
+      --max-num-seqs 4
+      --gpu-memory-utilization 0.75
+      --limit-mm-per-prompt '{"image": 2}'
+      --enable-prefix-caching
+      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+
+  # ---------------------------------------------------------------- :8006 nemotron-3-nano-omni-30b-a3b (opt-in)
+  vllm-nemotron-omni:
+    <<: *vllm
+    profiles: [nemotron-omni]
+    container_name: vllm-nemotron-omni
+    ports: ["127.0.0.1:8006:8000"]
+    labels:
+      switchboard.name: "Nemotron 3 Nano Omni 30B-A3B"
+      switchboard.note: "nvidia FP8; Mamba2-Transformer hybrid MoE, 3B active; image + video in (audio needs vllm[audio], not in the image); fp8 KV cache"
+    command: >
+      vllm serve nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8
+      --served-model-name nemotron-3-nano-omni-30b-a3b
+      --host 0.0.0.0 --port 8000
+      --trust-remote-code
+      --max-model-len 131072
+      --max-num-seqs 4
+      --max-num-batched-tokens 32768
+      --gpu-memory-utilization 0.45
+      --kv-cache-dtype fp8
+      --limit-mm-per-prompt '{"image": 1, "video": 1}'
+      --media-io-kwargs '{"video": {"fps": 2, "num_frames": 256}}'
+      --video-pruning-rate 0.5
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser nemotron_v3
 
 volumes:
   vllm-cache:

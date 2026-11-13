@@ -10,7 +10,14 @@ Services that publish the same host port are siblings (one model, different quan
 drafter): only one can run at a time, and a sibling's card offers "swap" (stop the holder,
 start this one). Per-service compose labels: switchboard.name (VS Code display name),
 switchboard.note (card text), switchboard.vision ("true" when no --limit-mm-per-prompt
-gives it away), switchboard.card (origin URL; default https://huggingface.co/<repo>).
+gives it away), switchboard.card (origin URL; default https://huggingface.co/<repo>),
+switchboard.logo (Hugging Face org whose avatar is the card logo; default the repo owner).
+Each card also shows the snapshot's size on disk and its safetensors bytes (what the weights
+take in memory before KV cache), read from the HF cache mounted read-only at HF_HUB_CACHE.
+
+Models start one at a time: two loading together mismeasure the shared GB10 pool and one
+ends up with no KV cache. A preset starts its services in sequence, waiting for health,
+and start/swap are refused while another model is loading.
 
 switchboard.json next to this file (re-read on every request) holds:
   links     shown at the top; {host} is TAILNET_HOST
@@ -35,6 +42,7 @@ MAX_GMU = float(os.environ.get("MAX_GMU", "0.85"))
 PORT = int(os.environ.get("PORT", "8080"))
 PROJECT = os.environ.get("COMPOSE_PROJECT", "grace-stack")
 TAILNET_HOST = os.environ.get("TAILNET_HOST", "")
+HF_HUB = os.environ.get("HF_HUB_CACHE") or os.path.join(os.environ.get("HOME", "/root"), ".cache", "huggingface", "hub")
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "switchboard.json")
 if not os.path.exists(CONFIG):                        # in the image the script lives in /app
     CONFIG = os.path.join(STACK_DIR, "apps", "switchboard", "switchboard.json")
@@ -154,6 +162,46 @@ def port_conflicts(services):
             ports[m["port"]].append(m["service"])
     return [f"{' and '.join(v)} share :{p}" for p, v in ports.items() if len(v) > 1]
 
+
+_size_cache = {}
+
+
+def hf_sizes(repo):
+    """(bytes on disk, safetensors bytes) of the newest cached snapshot of `repo`, None if not downloaded.
+    Symlinks into blobs/ are followed and de-duplicated by inode; cached for 10 min."""
+    now = time.time()
+    hit = _size_cache.get(repo)
+    if hit and now - hit[0] < 600:
+        return hit[1]
+    res = None
+    snaps = os.path.join(HF_HUB, "models--" + repo.replace("/", "--"), "snapshots")
+    try:
+        newest = max(os.scandir(snaps), key=lambda e: e.stat().st_mtime, default=None)
+        if newest:
+            disk = weights = 0
+            seen = set()
+            for root, _, files in os.walk(newest.path, followlinks=True):
+                for f in files:
+                    try:
+                        st = os.stat(os.path.join(root, f))
+                    except OSError:
+                        continue
+                    if st.st_ino in seen:
+                        continue
+                    seen.add(st.st_ino)
+                    disk += st.st_size
+                    if f.endswith(".safetensors"):
+                        weights += st.st_size
+            res = (disk, weights) if disk else None
+    except OSError:
+        pass
+    _size_cache[repo] = (now, res)
+    return res
+
+
+def gib(n):
+    return None if n is None else round(n / 2**30, 1)
+
 # ----------------------------------------------------------------- views
 
 
@@ -190,6 +238,10 @@ def snapshot():
         m["detail"] = status
         m["url"] = f"https://{TAILNET_HOST}:{m['port']}/v1" if TAILNET_HOST and m["port"] else f"http://127.0.0.1:{m['port']}/v1"
         m["note"] = m["labels"].get("switchboard.note", "")
+        org = m["labels"].get("switchboard.logo") or m["model"].split("/")[0]
+        m["logo"] = f"https://huggingface.co/api/organizations/{org}/avatar?redirect=true"
+        sizes = hf_sizes(m["model"])
+        m["disk_gib"], m["weights_gib"] = (gib(sizes[0]), gib(sizes[1])) if sizes else (None, None)
         m["origin"] = [{"name": n, "url": u} for n, u in origin_links(m)]
         m["siblings"] = [s for s in by_port[m["port"]] if s != m["service"]]
         entry = vscode_entry(m)
@@ -285,6 +337,46 @@ def up(ms, services):
     return run(compose_args(ms) + ["up", "-d", "--no-build", "--no-deps"] + services)
 
 
+def loading():
+    """Services whose container is up but not yet healthy."""
+    return sorted(m["service"] for m in snapshot()["models"] if m["status"] == "loading")
+
+
+def check_loading():
+    l = loading()
+    return f"refused: {', '.join(l)} still loading; one model at a time, or the pool is mismeasured" if l else None
+
+
+def wait_healthy(container, timeout=1500):
+    """Block until `container` is healthy. Error text if it exits, goes unhealthy, or times out."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        rc, out = run(["docker", "inspect", "-f", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}", container], timeout=30)
+        status, _, health = out.partition(" ")
+        if status == "running" and health == "healthy":
+            return None
+        if status != "running" or health == "unhealthy":
+            rc, tail = run(["docker", "logs", "--tail", "20", container], timeout=30)
+            return f"{container} is {status} {health}:\n{tail}"
+        time.sleep(5)
+    return f"{container} not healthy after {timeout} s"
+
+
+def up_each(ms, services, log):
+    """Start services one by one, waiting for health in between (see module docstring)."""
+    for s in services:
+        t0 = time.time()
+        rc, out = up([ms[s]], [s])
+        log.append(f"$ up -d {s}\n{out}")
+        if rc != 0:
+            return False
+        err = wait_healthy(ms[s]["container"])
+        log.append(err or f"{s} healthy after {round(time.time() - t0)} s")
+        if err:
+            return False
+    return True
+
+
 def holder(service):
     """The running sibling that holds `service`'s port, else None."""
     running = running_services()
@@ -299,7 +391,8 @@ def check_port(service):
 def do_start(services):
     def fn(job):
         ms = by_service()
-        err = next(filter(None, map(check_port, services)), None) or check_fit(services, running_services() - set(services))
+        err = next(filter(None, map(check_port, services)), None) or check_loading() \
+            or check_fit(services, running_services() - set(services))
         if err:
             return False, err
         rc, out = up([ms[s] for s in services], services)
@@ -343,11 +436,14 @@ def do_preset(preset):
             if rc != 0:
                 return False, "\n".join(log)
         to_start = [s for s in wanted if s not in running]
-        if to_start:
-            rc, out = up([ms[s] for s in to_start], to_start)
-            log.append(f"$ up -d {' '.join(to_start)}\n{out}")
-            if rc != 0:
+        still = [s for s in loading() if s in wanted]
+        if still:                                   # keep the sequence: let it finish before the next one
+            err = wait_healthy(ms[still[0]]["container"])
+            log.append(err or f"{still[0]} healthy")
+            if err:
                 return False, "\n".join(log)
+        if to_start and not up_each(ms, to_start, log):
+            return False, "\n".join(log)
         return True, "\n".join(log) or "already there"
     return fn
 
@@ -359,7 +455,7 @@ def do_swap(service):
         h = holder(service)
         if not h:
             return False, f"nothing to swap: no sibling of {service} is running"
-        err = check_fit([service], running_services() - {h, service})
+        err = check_loading() or check_fit([service], running_services() - {h, service})
         if err:
             return False, err
         rc, out = run(compose_args([ms[h]]) + ["stop", h])
@@ -400,6 +496,9 @@ PAGE = r"""<!doctype html>
   .meta code { color:var(--fg); font-size:12px }
   .meta a { color:var(--accent); text-decoration:none } .meta a:hover { text-decoration:underline }
   .note { color:var(--dim); font-size:12.5px; margin:-4px 0 10px }
+  .logo { width:22px; height:22px; border-radius:5px; object-fit:cover; flex:none; background:#ffffff12 }
+  .stats { display:flex; gap:6px 16px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); margin:0 0 10px }
+  .stats b { color:var(--fg); font-weight:600 }
   .group { grid-column:1 / -1; border:1px dashed var(--line); border-radius:12px; padding:10px 12px 12px }
   .ghead { color:var(--dim); font-size:13px; margin:0 0 10px } .ghead code { color:var(--fg); font-size:12.5px }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
@@ -471,8 +570,13 @@ function render(){
          <span class="sub">:${esc(m.port)} is held by ${esc(m.held_by)}</span>`
       : `<button class="primary" ${(busy||!fits)?'disabled':''} title="${fits?'':'would exceed MAX_GMU'}" onclick="act('/api/start',{service:'${m.service}'})">${fits?'start':'start (no room)'}</button>`;
     return `<div class="card ${m.status}">
-      <div class="name"><span class="dot"></span>${esc(m.service)} <span class="sub" style="font-weight:400">· ${esc(m.status)}</span></div>
-      <div class="meta">${origin}<br>served as <code>${esc(m.served)}</code> · GMU ${m.gmu.toFixed(2)} · ctx ${esc(m.ctx||'?')}<br><code>${esc(m.url)}</code><br>${esc(m.detail)}</div>
+      <div class="name"><img class="logo" src="${esc(m.logo)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"><span class="dot"></span>${esc(m.service)} <span class="sub" style="font-weight:400">· ${esc(m.status)}</span></div>
+      <div class="meta">${origin}<br>served as <code>${esc(m.served)}</code> · GMU ${m.gmu.toFixed(2)}<br><code>${esc(m.url)}</code><br>${esc(m.detail)}</div>
+      <div class="stats">
+        <span><b>${m.disk_gib == null ? 'not downloaded' : m.disk_gib.toFixed(1) + ' GiB'}</b> on disk</span>
+        <span><b>${m.weights_gib == null ? '–' : m.weights_gib.toFixed(1) + ' GiB'}</b> weights in memory</span>
+        <span><b>${m.ctx ? Number(m.ctx).toLocaleString() : '?'}</b> max context</span>
+      </div>
       ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
       <div class="row">
         ${!running
@@ -566,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(404, {"error": f"unknown service {svc!r}"})
                 verb = u.path.rsplit("/", 1)[1]
                 if verb == "start":   # answer the obvious refusal now; the job re-checks before acting
-                    err = check_port(svc) or check_fit([svc], running_services() - {svc})
+                    err = check_port(svc) or check_loading() or check_fit([svc], running_services() - {svc})
                     if err:
                         return self.send(409, {"error": err})
                 fn = {"start": do_start, "stop": do_stop, "restart": do_restart}[verb]([svc])
@@ -586,6 +690,8 @@ class Handler(BaseHTTPRequestHandler):
                 h = holder(svc)
                 if not h:
                     return self.send(409, {"error": f"no sibling of {svc} is running; use start"})
+                if check_loading():
+                    return self.send(409, {"error": check_loading()})
                 ok, msg = JOBS.submit(f"swap {h} → {svc}", do_swap(svc))
             else:
                 return self.send(404, {"error": "not found"})

@@ -53,6 +53,21 @@
       ]
     },
     {
+      "name": "Omni + Ornith",
+      "note": "Nemotron Omni (image/video in) beside Ornith",
+      "services": [
+        "vllm-nemotron-omni",
+        "vllm-ornith15-agentic"
+      ]
+    },
+    {
+      "name": "Qwen3.5-122B solo",
+      "note": "the big MoE; nothing else fits",
+      "services": [
+        "vllm-qwen35-122b"
+      ]
+    },
+    {
       "name": "All off",
       "note": "free the memory",
       "services": []
