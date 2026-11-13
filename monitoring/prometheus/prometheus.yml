@@ -28,6 +28,8 @@ scrape_configs:
         labels: { service: vllm-qwen35-122b }
       - targets: [vllm-nemotron-omni:8000]
         labels: { service: vllm-nemotron-omni }
+      - targets: [vllm-qwen38flash:8000]
+        labels: { service: vllm-qwen38flash }
 
   - job_name: dcgm
     static_configs:
