@@ -11,6 +11,8 @@ have to load one at a time, how to serve a model under one name while swapping t
 
 <!-- ![the switchboard](docs/switchboard.png)   drop a screenshot at docs/switchboard.png and uncomment -->
 
+This README and the `docs/` folder are also rendered at <https://thomuk.github.io/grace-stack/>.
+
 ## Layout
 
     docker-compose.yml      include: one line per module
