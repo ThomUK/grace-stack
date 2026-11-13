@@ -68,6 +68,13 @@
       ]
     },
     {
+      "name": "Qwen3.8 Flash Next solo",
+      "note": "125B-A6B on the community b12x image; nothing else fits",
+      "services": [
+        "vllm-qwen38flash"
+      ]
+    },
+    {
       "name": "All off",
       "note": "free the memory",
       "services": []

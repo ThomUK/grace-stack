@@ -369,7 +369,7 @@ def check_loading():
     return f"refused: {', '.join(l)} still loading; one model at a time, or the pool is mismeasured" if l else None
 
 
-def wait_healthy(container, timeout=1500):
+def wait_healthy(container, timeout=2400):
     """Block until `container` is healthy. Error text if it exits, goes unhealthy, or times out."""
     t0 = time.time()
     while time.time() - t0 < timeout:
