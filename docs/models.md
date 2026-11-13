@@ -35,6 +35,7 @@ port, a `tailscale serve` line.
 | vllm-codernext-fp8 | 8004 | `qwen3-coder-next` | Qwen FP8, 75 GiB; GMU 0.72, runs alone |
 | vllm-qwen35-122b | 8005 | `qwen3.5-122b-a10b` | RedHatAI NVFP4, 71 GiB; vision in; MTP 2 drafts; GMU 0.75, runs alone |
 | vllm-nemotron-omni | 8006 | `nemotron-3-nano-omni-30b-a3b` | nvidia FP8; image + video in; reasoning; fp8 KV cache; GMU 0.45 |
+| vllm-qwen38flash | 8007 | `qwen3.8-flash-next` | nvidia FP4 QAD of the 125B-A6B MoE, 95 GiB + n-gram table on disk; image + video in; MTP 4 drafts; GMU 0.80, runs alone; **community image**, see below |
 
 The switchboard shows each card's size on disk, weights in memory and max context live, with a link to the
 origin model card.
@@ -48,6 +49,7 @@ Tailscale serve, one line per port if you prefer them explicit:
     sudo tailscale serve --bg --https=8004  http://127.0.0.1:8004    # codernext API
     sudo tailscale serve --bg --https=8005  http://127.0.0.1:8005    # qwen3.5-122b API
     sudo tailscale serve --bg --https=8006  http://127.0.0.1:8006    # nemotron omni API
+    sudo tailscale serve --bg --https=8007  http://127.0.0.1:8007    # qwen3.8-flash-next API
 
 ## Performance (GB10)
 - Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts).
@@ -66,6 +68,16 @@ Tailscale serve, one line per port if you prefer them explicit:
   weights, so no speculative decoding; 3B active keeps decode quick anyway. Its KV cache is small (12 attention
   layers, 2 KV heads), which is why 262k context fits in GMU 0.45.
 - Tool parsers: `gemma4`, `qwen3_xml`, `qwen3_coder`. List: `docker compose exec vllm-gemma12 vllm serve --help=all | grep -A4 tool-call-parser`.
+
+## Qwen3.8-Flash-Next and the community image
+`nvidia/Qwen3.8-Flash-Next-FP4-Local` is a 125B-parameter MoE (6B active) with a 51B-parameter n-gram embedding
+table, quantised by NVIDIA for local Blackwell boxes. Upstream vLLM cannot load its NVFP4 scale format yet, so
+`vllm-qwen38flash` is the one service not on `grace/vllm`: it runs `eugr/spark-vllm-b12x:nightly-20261102`, the community
+DGX Spark build with the `b12x` kernels, with the environment, flags, extra caches and relaxed seccomp/apparmor
+from the model card. The n-gram table is streamed from the HF cache on disk (`VLLM_PLE_TABLE_MEMORY=disk`), so keep
+the cache on the NVMe. At GMU 0.80 nothing else fits beside it; the first start compiles and builds that table and
+can take well over the usual four minutes, hence its longer health `start_period`. The tag is pinned to a dated nightly
+on purpose; `latest` moves with the author's builds, so bump the date deliberately after testing.
 
 ## Why the vLLM image is three lines
 `vllm/vllm-openai:*-aarch64` ships vLLM, torch and FlashInfer built together. Pip-installing vLLM over an NVIDIA
