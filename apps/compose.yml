@@ -33,7 +33,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${PWD}:${PWD}:ro
       - ${HOME}/.cache/huggingface:${HOME}/.cache/huggingface:ro   # sizes on the cards
+      - switchboard-auth:/auth          # password hash + TOTP secret, set up in the browser
 
 volumes:
   open-webui:
     external: true
+  switchboard-auth:

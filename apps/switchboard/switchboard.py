@@ -26,18 +26,36 @@ switchboard.json next to this file (re-read on every request) holds:
   presets   whole sets to switch to: stop what is not wanted, then start the rest
 
 Runs `docker compose` against the repo at STACK_DIR, mounted read-only at the same path as
-on the host so compose computes the same config hashes as your shell does. No auth: it
-holds the Docker socket, keep it on loopback + tailscale serve.
+on the host so compose computes the same config hashes as your shell does.
+
+Auth: it holds the Docker socket, so it has its own login: a password (scrypt) plus a TOTP
+authenticator code, both set up in the browser. State lives in AUTH_FILE (a volume). With no
+state, the container logs a one-time setup token and the page walks through token -> password
+-> scan QR -> confirm code; until then every request but /health is refused. Signed in, /account
+changes the password or replaces the authenticator (current password + code needed for either).
+Lost phone: `--reset-auth` (docker compose run --rm switchboard --reset-auth) wipes the state;
+the next start prints a new token. Sessions are an in-memory token in an
+HttpOnly/Secure/SameSite=Strict cookie, 12 h idle / 7 days max, gone on restart. Failed attempts
+of any kind are serialised and slowed down (doubling delay, 15 min lock after 20). Every POST
+must be same-origin (Sec-Fetch-Site / Origin), so a page elsewhere cannot drive it. Keep it on
+loopback + tailscale serve regardless.
 """
+import base64
 import collections
+import hashlib
+import hmac
+import html
 import json
 import os
 import re
+import secrets
+import struct
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 STACK_DIR = os.environ.get("STACK_DIR", "/stack")
 MAX_GMU = float(os.environ.get("MAX_GMU", "0.85"))
@@ -471,6 +489,266 @@ def do_swap(service):
         return rc == 0, "\n".join(log)
     return fn
 
+# ----------------------------------------------------------------- auth
+
+AUTH_FILE = os.environ.get("AUTH_FILE", "/auth/auth.json")
+SESSION_IDLE = int(os.environ.get("SESSION_IDLE", str(12 * 3600)))
+SESSION_MAX = int(os.environ.get("SESSION_MAX", str(7 * 24 * 3600)))
+SCRYPT = dict(n=2**15, r=8, p=1, dklen=32, maxmem=128 * 2**20)
+ISSUER = "grace switchboard"
+MIN_PW = 6
+
+
+def load_auth():
+    try:
+        with open(AUTH_FILE) as f:
+            d = json.load(f)
+        return d if d.get("password") and d.get("totp") else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_auth(d):
+    global AUTH
+    os.makedirs(os.path.dirname(AUTH_FILE), exist_ok=True)
+    tmp = AUTH_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, AUTH_FILE)
+    AUTH = d
+
+
+AUTH = load_auth()                                    # {"password": "scrypt:..", "totp": "<base32>", "created": ts} | None
+SETUP_TOKEN = secrets.token_hex(4).upper() if AUTH is None else None   # printed to the log; claims the first setup
+PENDING = {}                                          # onboarding / re-enrolment in progress
+
+
+def hash_password(pw):
+    """`scrypt:<salt>:<hash>` (base64)."""
+    salt = secrets.token_bytes(16)
+    return "scrypt:" + base64.b64encode(salt).decode() + ":" + base64.b64encode(hashlib.scrypt(pw.encode(), salt=salt, **SCRYPT)).decode()
+
+
+def check_password(pw, hashed):
+    try:
+        kind, salt, h = hashed.split(":")
+        salt, h = base64.b64decode(salt), base64.b64decode(h)
+    except (ValueError, AttributeError):
+        return False
+    return kind == "scrypt" and hmac.compare_digest(hashlib.scrypt(pw.encode(), salt=salt, **SCRYPT), h)
+
+
+def verify_password(pw):
+    return bool(AUTH) and check_password(pw, AUTH["password"])
+
+
+def totp(secret, counter):
+    """RFC 6238: SHA-1, 30 s steps, 6 digits."""
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
+    mac = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    o = mac[-1] & 15
+    return f"{(int.from_bytes(mac[o:o + 4], 'big') & 0x7FFFFFFF) % 1_000_000:06d}"
+
+
+_totp_used = 0          # highest step accepted so far: a code works once
+
+
+def check_totp(secret, code):
+    global _totp_used
+    code = (code or "").strip().replace(" ", "")
+    now = int(time.time()) // 30
+    for c in (now, now - 1, now + 1):            # one step of clock skew either way
+        if c > _totp_used and hmac.compare_digest(totp(secret, c), code):
+            _totp_used = c
+            return True
+    return False
+
+
+def verify_totp(code):
+    return bool(AUTH) and check_totp(AUTH["totp"], code)
+
+
+def new_totp_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode()
+
+
+def otpauth_url(secret):
+    return f"otpauth://totp/{quote(ISSUER)}:admin?secret={secret}&issuer={quote(ISSUER)}&algorithm=SHA1&digits=6&period=30"
+
+
+def qr_svg(text):
+    """Inline SVG of a QR code via segno (installed in the image); None when the library is missing."""
+    try:
+        import segno
+        return segno.make(text, error="m").svg_inline(scale=5, border=2, dark="#000", light="#fff")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+SESSIONS = {}                                    # token -> {created, seen, via}
+SESSIONS_LOCK = threading.Lock()
+ATTEMPT_LOCK = threading.Lock()
+FAILS = 0
+LOCKED_UNTIL = 0.0
+
+
+def _expired(s, now):
+    return now - s["seen"] > SESSION_IDLE or now - s["created"] > SESSION_MAX
+
+
+def new_session(via):
+    tok = secrets.token_urlsafe(32)
+    with SESSIONS_LOCK:
+        now = time.time()
+        for k in [k for k, s in SESSIONS.items() if _expired(s, now)]:
+            del SESSIONS[k]
+        SESSIONS[tok] = {"created": now, "seen": now, "via": via}
+    return tok
+
+
+def session_ok(tok):
+    with SESSIONS_LOCK:
+        s = SESSIONS.get(tok)
+        if not s:
+            return False
+        if _expired(s, time.time()):
+            del SESSIONS[tok]
+            return False
+        s["seen"] = time.time()
+        return True
+
+
+def drop_session(tok):
+    with SESSIONS_LOCK:
+        SESSIONS.pop(tok, None)
+
+
+def guarded(check, via, what):
+    """Run a secret check under one global throttle: one at a time, the delay doubling from the third
+    consecutive failure (capped at a minute), a 15-minute lock after twenty. Returns (ok, message)."""
+    global FAILS, LOCKED_UNTIL
+    with ATTEMPT_LOCK:
+        now = time.time()
+        if now < LOCKED_UNTIL:
+            return False, f"locked for {int(LOCKED_UNTIL - now)} s after too many failures"
+        if FAILS >= 3:
+            time.sleep(min(2 ** (FAILS - 3), 60))
+        if check():
+            FAILS = 0
+            print(f"switchboard: {what} ok from {via}", flush=True)
+            return True, "ok"
+        FAILS += 1
+        if FAILS >= 20:
+            LOCKED_UNTIL, FAILS = time.time() + 900, 0
+            print(f"switchboard: 20 failures, locked for 15 min (last: {what} from {via})", flush=True)
+        else:
+            print(f"switchboard: {what} failed #{FAILS} from {via}", flush=True)
+        return False, f"wrong {what}"
+
+
+def password_problem(a, b):
+    if a != b:
+        return "the two passwords differ"
+    if len(a) < MIN_PW:
+        return f"use at least {MIN_PW} characters"
+    return None
+
+
+# -- pages (no scripts, no third-party assets: these are the pages an attacker would target)
+
+AUTH_CSS = """
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --fg:#e6e8ee; --dim:#8b93a7; --bad:#f85149; --up:#3fb950; --accent:#58a6ff }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; padding:16px; box-sizing:border-box }
+  .box { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px 28px 20px; width:min(420px, 100%) }
+  h1 { font-size:18px; margin:0 0 4px } h2 { font-size:14px; color:var(--dim); margin:22px 0 0; text-transform:uppercase; letter-spacing:.06em }
+  p { color:var(--dim); font-size:13.5px; margin:8px 0 } a { color:var(--accent) } code { color:var(--fg) }
+  label { display:block; color:var(--dim); font-size:13px; margin:14px 0 4px }
+  input { width:100%; box-sizing:border-box; background:#0a0c10; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:8px 10px; font:inherit; font-size:16px }
+  button { margin-top:18px; width:100%; background:#1f4a7a; border:1px solid #2b6cb0; color:var(--fg); border-radius:7px; padding:9px; font:inherit; cursor:pointer }
+  .err { color:var(--bad); font-size:13px; min-height:18px; margin-top:10px } .ok { color:var(--up); font-size:13px; margin-top:10px }
+  .sub { color:var(--dim); font-size:12.5px; margin-top:12px }
+  .qr { background:#fff; border-radius:8px; padding:8px; width:max-content; margin:14px auto 6px } .qr svg { display:block }
+  code.secret { display:block; text-align:center; font-size:15px; letter-spacing:.08em; word-spacing:.5em; margin:6px 0 2px }
+  .step { color:var(--dim); font-size:12.5px; margin-bottom:10px }
+"""
+
+
+def shell(title, body):
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>grace switchboard · {html.escape(title)}</title><style>{AUTH_CSS}</style></head><body><div class="box">{body}</div></body></html>')
+
+
+def login_page(error=""):
+    return shell("sign in", f"""
+<form method="post" action="/login">
+  <h1>grace switchboard</h1>
+  <label for="pw">password</label><input id="pw" name="password" type="password" autocomplete="current-password" autofocus required>
+  <label for="code">authenticator code</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+  <button type="submit">sign in</button>
+  <div class="err">{html.escape(error)}</div>
+  <div class="sub">This page holds the Docker socket on grace. Sessions last 12 h idle, 7 days at most.</div>
+</form>""")
+
+
+def setup_page_1(error=""):
+    return shell("set up", f"""
+<form method="post" action="/setup/password">
+  <h1>Set up the switchboard</h1>
+  <div class="step">step 1 of 2 · choose a password</div>
+  <p>Nobody has claimed this switchboard yet. The setup token is in the container log:
+  <code>docker logs switchboard</code> on grace.</p>
+  <label for="tok">setup token</label><input id="tok" name="token" autocomplete="off" autofocus required>
+  <label for="pw">new password (at least {MIN_PW} characters)</label><input id="pw" name="password" type="password" autocomplete="new-password" minlength="{MIN_PW}" required>
+  <label for="pw2">again</label><input id="pw2" name="password2" type="password" autocomplete="new-password" minlength="{MIN_PW}" required>
+  <button type="submit">continue</button>
+  <div class="err">{html.escape(error)}</div>
+</form>""")
+
+
+def enrol_page(secret, action, title, step, error=""):
+    """QR + secret + confirm field; used by onboarding (step 2) and by /account to replace the authenticator."""
+    url = otpauth_url(secret)
+    svg = qr_svg(url)
+    pic = f'<div class="qr">{svg}</div>' if svg else '<p class="err">QR renderer missing in this image; enter the key by hand.</p>'
+    grouped = " ".join(secret[i:i + 4] for i in range(0, len(secret), 4))
+    return shell(title, f"""
+<form method="post" action="{action}">
+  <h1>{html.escape(title)}</h1>
+  <div class="step">{html.escape(step)}</div>
+  <p>Scan with Google Authenticator, 1Password, Authy or any TOTP app, or <a href="{html.escape(url)}">open it in an app on this device</a>.
+  Typing the key works too:</p>
+  {pic}
+  <code class="secret">{grouped}</code>
+  <p class="sub" style="text-align:center">time-based · SHA-1 · 6 digits · 30 s</p>
+  <label for="code">code from the app, to confirm</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" autofocus required>
+  <button type="submit">confirm</button>
+  <div class="err">{html.escape(error)}</div>
+</form>""")
+
+
+def account_page(error="", info=""):
+    return shell("account", f"""
+<h1>Account</h1>
+<p><a href="/">← back to the switchboard</a></p>
+<div class="ok">{html.escape(info)}</div><div class="err">{html.escape(error)}</div>
+<h2>change password</h2>
+<form method="post" action="/account/password">
+  <label>current password</label><input name="password" type="password" autocomplete="current-password" required>
+  <label>authenticator code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+  <label>new password (at least {MIN_PW} characters)</label><input name="new" type="password" autocomplete="new-password" minlength="{MIN_PW}" required>
+  <label>again</label><input name="new2" type="password" autocomplete="new-password" minlength="{MIN_PW}" required>
+  <button type="submit">change password</button>
+</form>
+<h2>replace authenticator</h2>
+<p>New phone? Confirm with the current one, then scan a fresh code. Lost it? On grace:
+<code>docker compose run --rm switchboard --reset-auth</code>, then <code>docker compose restart switchboard</code> and set up again with the new token.</p>
+<form method="post" action="/account/totp">
+  <label>current password</label><input name="password" type="password" autocomplete="current-password" required>
+  <label>current authenticator code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+  <button type="submit">show a new QR code</button>
+</form>""")
+
 # ----------------------------------------------------------------- http
 
 PAGE = r"""<!doctype html>
@@ -528,7 +806,7 @@ PAGE = r"""<!doctype html>
   .ok { color:var(--up) } .fail { color:var(--bad) } .busy { color:var(--load) }
   #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#242a35; border:1px solid var(--line); padding:8px 14px; border-radius:8px; display:none; z-index:9 }
 </style></head><body><main>
-<div class="top"><h1>grace switchboard</h1><div class="links" id="links"></div></div>
+<div class="top"><h1>grace switchboard</h1><div class="links" id="links"></div><span><a href="/account" style="color:var(--dim);font-size:13px;margin-right:12px">account</a><button class="small" onclick="signOut()">sign out</button></span></div>
 <div class="sub" id="sub">loading…</div>
 <div class="bar" id="bar"><i style="width:0"></i><b></b></div>
 <div class="sub" id="gmu"></div>
@@ -548,8 +826,10 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 3500); }
 async function api(path, body){
   const r = await fetch(path, body ? {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)} : {});
+  if (r.status === 401) { location.reload(); return {}; }          // session expired: back to the login page
   const j = await r.json(); if (!r.ok) toast(j.error || r.statusText); return j;
 }
+function signOut(){ api('/logout', {}).then(() => location.reload()); }
 function act(path, body, confirmMsg){ if (confirmMsg && !confirm(confirmMsg)) return; api(path, body).then(j => { if (j.error) toast(j.error); else toast(j.message || 'ok'); refresh(); }); }
 function copyText(id, what){
   const text = $(id).textContent;
@@ -666,20 +946,88 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "GET" or (args and str(args[1])[:1] not in "23"):
             super().log_message(fmt, *args)
 
-    def send(self, code, body, ctype="application/json"):
+    def send(self, code, body, ctype="application/json", extra=()):
         data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        for k, v in extra:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
+
+    def redirect(self, where, extra=()):
+        self.send_response(303)
+        self.send_header("Location", where)
+        self.send_header("Content-Length", "0")
+        for k, v in extra:
+            self.send_header(k, v)
+        self.end_headers()
+
+    # -- who is asking
+    def client(self):
+        return self.headers.get("X-Forwarded-For") or self.client_address[0]
+
+    def cookie(self, name="sb"):
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
+        return None
+
+    def in_setup(self):
+        """Step 2 of onboarding belongs to the browser that passed step 1 (its setup cookie), nobody else."""
+        return bool(PENDING.get("password")) and hmac.compare_digest(self.cookie("setup") or "", PENDING.get("sid", ""))
+
+    def authed(self):
+        tok = self.cookie()
+        return bool(tok) and session_ok(tok)
+
+    def same_origin(self):
+        """Browsers label every request: refuse POSTs that a page on another site set off."""
+        site = self.headers.get("Sec-Fetch-Site")
+        if site and site not in ("same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+            if urlparse(origin).hostname != host.split(":")[0].lower():
+                return False
+        return True
+
+    @staticmethod
+    def session_cookie(tok, max_age, name="sb"):
+        return ("Set-Cookie", f"{name}={tok}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={max_age}")
+
+    def form(self, raw):
+        return {k: v[0] for k, v in parse_qs(raw.decode(errors="replace"), keep_blank_values=True).items()}
 
     def do_GET(self):
         u = urlparse(self.path)
         try:
+            if u.path == "/health":
+                return self.send(200, {"ok": True})
+            if AUTH is None:                                   # onboarding
+                if u.path in ("/", "/index.html"):
+                    if self.in_setup():
+                        return self.send(200, enrol_page(PENDING["totp"], "/setup/confirm", "Set up the switchboard", "step 2 of 2 · add it to your authenticator"), "text/html")
+                    return self.send(200, setup_page_1(), "text/html")
+                if u.path.startswith("/api/"):
+                    return self.send(503, {"error": "setup required: open the page"})
+                return self.redirect("/")
+            if not self.authed():
+                if u.path in ("/", "/index.html"):
+                    return self.send(200, login_page(), "text/html")
+                if u.path.startswith("/api/"):
+                    return self.send(401, {"error": "login required"})
+                return self.redirect("/")
             if u.path in ("/", "/index.html"):
                 return self.send(200, PAGE, "text/html")
+            if u.path == "/account":
+                return self.send(200, account_page(), "text/html")
             if u.path == "/api/state":
                 return self.send(200, snapshot())
             if u.path == "/api/logs":
@@ -689,20 +1037,80 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(404, {"error": f"unknown service {svc!r}"})
                 rc, out = run(["docker", "logs", "--tail", "80", m["container"]], timeout=30)
                 return self.send(200, {"logs": out})
-            if u.path == "/health":
-                return self.send(200, {"ok": True})
             return self.send(404, {"error": "not found"})
         except Exception as e:  # noqa: BLE001
             return self.send(500, {"error": f"{type(e).__name__}: {e}"})
 
     def do_POST(self):
+        global SETUP_TOKEN
         n = int(self.headers.get("Content-Length") or 0)
-        try:
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            return self.send(400, {"error": "bad json"})
+        raw = self.rfile.read(min(n, 1 << 16))
         u = urlparse(self.path)
+        via = self.client()
+        if not self.same_origin():
+            return self.send(403, {"error": "cross-site request refused"})
+        H = "text/html"
         try:
+            if AUTH is None:                                   # onboarding
+                if u.path == "/setup/password":
+                    f = self.form(raw)
+                    ok, msg = guarded(lambda: hmac.compare_digest(f.get("token", "").strip().upper(), SETUP_TOKEN or ""), via, "setup token")
+                    if not ok:
+                        return self.send(401, setup_page_1(msg), H)
+                    bad = password_problem(f.get("password", ""), f.get("password2", ""))
+                    if bad:
+                        return self.send(400, setup_page_1(bad), H)
+                    PENDING.update(password=hash_password(f["password"]), totp=new_totp_secret(), sid=secrets.token_urlsafe(16))
+                    return self.redirect("/", [self.session_cookie(PENDING["sid"], 1800, "setup")])
+                if u.path == "/setup/confirm" and self.in_setup():
+                    f = self.form(raw)
+                    ok, msg = guarded(lambda: check_totp(PENDING["totp"], f.get("code")), via, "authenticator code")
+                    if not ok:
+                        return self.send(401, enrol_page(PENDING["totp"], "/setup/confirm", "Set up the switchboard", "step 2 of 2 · add it to your authenticator", msg), H)
+                    save_auth({"password": PENDING["password"], "totp": PENDING["totp"], "created": time.time()})
+                    PENDING.clear()
+                    SETUP_TOKEN = None
+                    print(f"switchboard: setup complete from {via}", flush=True)
+                    return self.redirect("/", [self.session_cookie(new_session(via), SESSION_MAX), self.session_cookie("", 0, "setup")])
+                return self.send(503, {"error": "setup required: open the page"})
+            if u.path == "/login":
+                f = self.form(raw)
+                ok, msg = guarded(lambda: verify_password(f.get("password", "")) and verify_totp(f.get("code")), via, "password or code")
+                if not ok:
+                    return self.send(401, login_page(msg), H)
+                return self.redirect("/", [self.session_cookie(new_session(via), SESSION_MAX)])
+            if not self.authed():
+                return self.send(401, {"error": "login required"})
+            if u.path == "/logout":
+                drop_session(self.cookie())
+                return self.send(200, {"message": "signed out"}, extra=[self.session_cookie("", 0)])
+            if u.path.startswith("/account/"):
+                f = self.form(raw)
+                if u.path == "/account/totp/confirm":
+                    if not PENDING.get("totp"):
+                        return self.send(400, account_page("no enrolment in progress"), H)
+                    ok, msg = guarded(lambda: check_totp(PENDING["totp"], f.get("code")), via, "authenticator code")
+                    if not ok:
+                        return self.send(401, enrol_page(PENDING["totp"], "/account/totp/confirm", "Replace authenticator", "scan, then confirm", msg), H)
+                    save_auth({**AUTH, "totp": PENDING.pop("totp")})
+                    return self.send(200, account_page(info="authenticator replaced; the old one no longer works"), H)
+                ok, msg = guarded(lambda: verify_password(f.get("password", "")) and verify_totp(f.get("code")), via, "password or code")
+                if not ok:
+                    return self.send(401, account_page(msg), H)
+                if u.path == "/account/password":
+                    bad = password_problem(f.get("new", ""), f.get("new2", ""))
+                    if bad:
+                        return self.send(400, account_page(bad), H)
+                    save_auth({**AUTH, "password": hash_password(f["new"])})
+                    return self.send(200, account_page(info="password changed"), H)
+                if u.path == "/account/totp":
+                    PENDING["totp"] = new_totp_secret()
+                    return self.send(200, enrol_page(PENDING["totp"], "/account/totp/confirm", "Replace authenticator", "scan, then confirm"), H)
+                return self.send(404, {"error": "not found"})
+            try:
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                return self.send(400, {"error": "bad json"})
             if u.path in ("/api/start", "/api/stop", "/api/restart"):
                 svc = body.get("service")
                 if svc not in by_service():
@@ -740,9 +1148,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if "--reset-auth" in sys.argv:
+        try:
+            os.remove(AUTH_FILE)
+            print(f"removed {AUTH_FILE}; restart the switchboard and it prints a new setup token")
+        except FileNotFoundError:
+            print(f"{AUTH_FILE} did not exist; nothing to reset")
+        raise SystemExit(0)
     if not os.path.exists(os.path.join(STACK_DIR, "docker-compose.yml")):
         raise SystemExit(f"STACK_DIR={STACK_DIR} has no docker-compose.yml; mount the repo there")
-    print(f"switchboard: stack {STACK_DIR}, project {PROJECT}, max GMU {MAX_GMU}, port {PORT}")
+    auth = "password + TOTP" if AUTH else f"NOT SET UP: open the page and enter setup token {SETUP_TOKEN}"
+    print(f"switchboard: stack {STACK_DIR}, project {PROJECT}, max GMU {MAX_GMU}, port {PORT}, auth: {auth}", flush=True)
     for m in models():
         print(f"  {m['service']:<24} gmu {m['gmu']:<5} :{m['port']}  {m['model']}")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

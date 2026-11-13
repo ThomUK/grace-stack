@@ -25,7 +25,7 @@ and list only those in `docker-compose.yml`.
 | models     | vllm-qwen35-122b | 127.0.0.1:8005     | Qwen3.5-122B-A10B RedHatAI NVFP4 as `qwen3.5-122b-a10b`; vision in; MTP; GMU 0.75, runs alone |
 | models     | vllm-nemotron-omni | 127.0.0.1:8006   | Nemotron 3 Nano Omni 30B-A3B FP8 as `nemotron-3-nano-omni-30b-a3b`; image + video in; reasoning; GMU 0.45 |
 | apps       | open-webui     | 127.0.0.1:12000      | data in external volume `open-webui` |
-| apps       | switchboard    | 127.0.0.1:8080       | start/stop models and presets; holds the Docker socket |
+| apps       | switchboard    | 127.0.0.1:8080       | start/stop models and presets; holds the Docker socket; own login (password + TOTP) |
 | monitoring | grafana        | 127.0.0.1:3000       | the dashboards; login from .env |
 | monitoring | prometheus     | internal             | 30 d retention |
 | monitoring | dcgm-exporter  | internal             | GPU temps/power/util |
@@ -47,7 +47,8 @@ Ports on 127.0.0.1 are fronted by `tailscale serve`; a `0.0.0.0` bind on a port 
     python3 monitoring/grafana/build_dashboards.py   # dashboard JSON is generated, not committed
     docker compose build                     # grace/vllm from the official aarch64 image, grace/switchboard
     docker compose up -d                     # infra only; run from the repo root: the switchboard mounts $PWD
-    xdg-open http://127.0.0.1:8080           # switchboard: pick a preset; models take ~4 min to (healthy)
+    docker logs switchboard                  # shows the one-time setup token for the switchboard login
+    xdg-open http://127.0.0.1:8080           # set up login (token, password, scan QR), then pick a preset; models take ~4 min
 
     sudo tailscale serve --bg --https=12000 http://127.0.0.1:12000   # Open WebUI
     sudo tailscale serve --bg --https=3000  http://127.0.0.1:3000    # Grafana
@@ -65,11 +66,51 @@ URLs: `https://<machine>.<tailnet>.ts.net:<port>`, the name you set as `TAILNET_
 name (mic in Open WebUI needs it).
 
 ## Security
-Nothing here is meant to face the internet. Loopback binds plus `tailscale serve` are the only access control
-for most services, so every member of your tailnet can reach them:
-- The vLLM endpoints run without `--api-key`.
-- switchboard holds the Docker socket, which is root-equivalent on the host, and has no login. Keep it off the LAN.
+Nothing here is meant to face the internet (Funnel stays off). Everything below is reachable by any device on
+the tailnet, so each service's own login is the second layer:
+
+| exposed | auth |
+|---|---|
+| Grafana :3000, Open WebUI :12000 | their own user accounts |
+| DGX Dashboard :11000 | NVIDIA's own login |
+| switchboard :8080 | password + TOTP, below. It holds the Docker socket, which is root-equivalent on the host |
+| vLLM APIs :8000–:8006 | **none yet** (`--api-key` is the fix; pending) |
+
 - cadvisor is `privileged`; cadvisor and node-exporter mount the host filesystem read-only.
+- If your tailnet devices are *tagged* (common with auth keys), `tailscale serve` adds no user identity headers, so
+  identity-based tricks (Grafana's auth proxy and the like) have nothing to read. Restrict by device instead, in the
+  admin console's Access controls. A starting point, which only restricts once the default `"*" → "*"` rule is
+  removed; give this machine its own tag (`tag:grace` below) rather than addressing it by IP:
+
+      "grants": [
+        // admin pages: your own laptop and phone only
+        { "src": ["tag:laptop", "tag:phone"], "dst": ["tag:grace"], "ip": ["tcp:8080", "tcp:11000"] },
+        // Grafana, Open WebUI and the model APIs: those two plus any machine that should call the models
+        { "src": ["tag:laptop", "tag:phone", "tag:agents"], "dst": ["tag:grace"],
+          "ip": ["tcp:3000", "tcp:12000", "tcp:8000-8006"] }
+        // plus whatever else the tailnet needs (SSH to grace, your own devices to each other)
+      ]
+
+### Switchboard login
+Standard library plus one QR library in the image, no extra container, nothing in `.env`. State (scrypt password
+hash, TOTP secret) lives in the `switchboard-auth` volume at `/auth/auth.json`, mode 600.
+
+- **First run**: the container log prints a setup token. The page asks for the token and a new password (six
+  characters or more), then shows a QR code and the key for your authenticator app and finishes when you enter a
+  code from it. Until that is done every request but `/health` is refused, and the token stops a stranger on the
+  tailnet from claiming the page first.
+- **Signing in**: password + six-digit code (RFC 6238; a code is accepted once, one step of clock skew either way).
+  A random token goes in an `HttpOnly; Secure; SameSite=Strict` cookie; sessions end after 12 h idle or 7 days, and
+  all of them on a container restart (`up -d --build` included).
+- **Account** (link in the header): change the password, or replace the authenticator with a fresh QR; both need the
+  current password and a current code.
+- **Lost phone**: `docker compose run --rm switchboard --reset-auth`, then `docker compose restart switchboard`;
+  the log prints a new setup token and the page starts over. Anyone who can run that has root on grace anyway.
+- **Throttle**: token, password and code checks share one queue; from the third consecutive failure the delay
+  doubles (capped at a minute) and twenty failures lock everything for fifteen minutes. Each failure is logged with
+  the tailnet address `tailscale serve` forwards.
+- **CSRF**: every POST must be same-origin (`Sec-Fetch-Site` / `Origin`), so a page you have open elsewhere cannot
+  stop a model. The login, setup and account pages carry no scripts and load nothing from third parties.
 
 ## Operating
     docker compose up -d                        # apply edits; recreates only what changed
@@ -123,7 +164,8 @@ Per-model metadata is compose `labels` on the service, next to the command it de
 
 The container runs `docker compose` against this repo, bind-mounted read-only at the same absolute path as on the host.
 That keeps compose's config hashes identical to your shell's, so neither side recreates containers the other
-started. After editing `apps/switchboard/switchboard.py`: `docker compose up -d --build switchboard`.
+started. After editing `apps/switchboard/switchboard.py`: `docker compose up -d --build switchboard` (which also
+signs everyone out).
 
 ## Grafana
 Four provisioned dashboards, home is **overview**: stat tiles that link to **system** (GPU/host),
