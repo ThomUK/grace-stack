@@ -36,6 +36,7 @@ port, a `tailscale serve` line.
 | vllm-qwen35-122b | 8005 | `qwen3.5-122b-a10b` | RedHatAI NVFP4, 71 GiB; vision in; MTP 2 drafts; GMU 0.75, runs alone |
 | vllm-nemotron-omni | 8006 | `nemotron-3-nano-omni-30b-a3b` | nvidia FP8; image + video in; reasoning; fp8 KV cache; GMU 0.45 |
 | vllm-qwen38flash | 8007 | `qwen3.8-flash-next` | nvidia FP4 QAD of the 125B-A6B MoE, 95 GiB + n-gram table on disk; image + video in; MTP 4 drafts; GMU 0.80, runs alone; **community image**, see below |
+| vllm-whisper | 8008 | `openai/whisper-large-v3-turbo` | openai fp16, 1.6 GiB; speech to text only, `/v1/audio/transcriptions`; not in Open WebUI's seed list; network alias `stt`; GMU 0.05 (weights + activations measure 3.3 GiB; the rest is KV cache, ~25k tokens) |
 
 The switchboard shows each card's size on disk, weights in memory and max context live, with a link to the
 origin model card.
@@ -50,6 +51,7 @@ Tailscale serve, one line per port if you prefer them explicit:
     sudo tailscale serve --bg --https=8005  http://127.0.0.1:8005    # qwen3.5-122b API
     sudo tailscale serve --bg --https=8006  http://127.0.0.1:8006    # nemotron omni API
     sudo tailscale serve --bg --https=8007  http://127.0.0.1:8007    # qwen3.8-flash-next API
+    sudo tailscale serve --bg --https=8008  http://127.0.0.1:8008    # whisper transcription API
 
 ## Performance (GB10)
 - Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts).

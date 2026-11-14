@@ -32,16 +32,15 @@ are open and show only the pipeline mode, version and counts.
 
 ## Backends (pending)
 
-`full` mode expects three services that are not in the stack yet. The compose module already names them, so
-adding each is a matter of a new module folder plus an `include:` line:
+`full` mode expects three services. The compose module already names them; one exists so far:
 
 | env var in the module | service | planned |
 |---|---|---|
-| `PIXELDOG_STT_URL=http://stt:8000/v1` | `stt` | Whisper large-v3-turbo behind `/v1/audio/transcriptions`; which server runs fastest on GB10 is an open spike |
+| `PIXELDOG_STT_URL=http://stt:8000/v1` | `stt` | **done**: `vllm-whisper` in `models/compose.yml` (port 8008, profile `whisper`), with `stt` as a network alias. Whether another server beats vLLM on latency is still open |
 | `PIXELDOG_TTS_URL=http://kokoro:8880/v1` | `kokoro` | Kokoro-FastAPI, streamed PCM; aarch64 GPU image availability is the spike, CPU is the fallback |
 | `PIXELDOG_DEFAULT_LLM_URL=http://vllm-voice:8000/v1` | `vllm-voice` | a small fast instruct model served as `voice-llm`, chosen for time to first sentence |
 
-The GPU memory fractions of the existing models will need lowering so the three fit alongside them; record
+The GPU memory fractions of the existing models will need lowering so all three fit alongside them; record
 the chosen values in [models.md](models.md) when they land. Until then `echo` and `fake` work with nothing else
 running.
 

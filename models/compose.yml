@@ -15,6 +15,7 @@
 #   :8005  qwen3.5-122b-a10b            vllm-qwen35-122b        RedHatAI NVFP4, 71 GiB  GMU 0.75  biggest MoE here, vision; runs alone
 #   :8006  nemotron-3-nano-omni-30b-a3b vllm-nemotron-omni      nvidia FP8, 33 GiB      GMU 0.45  image + video in, reasoning
 #   :8007  qwen3.8-flash-next           vllm-qwen38flash        nvidia FP4 QAD, 95 GiB  GMU 0.80  125B-A6B MoE, vision; community b12x image; runs alone
+#   :8008  openai/whisper-large-v3-turbo vllm-whisper           openai fp16, 1.6 GiB    GMU 0.05  speech to text only; network alias `stt` for pixel-dog
 #
 # Memory: vLLM sees 121.6 GiB. Weights + ~7 GiB of runtime overhead come out of GMU × 121.6; the rest is
 # KV cache ("Available KV cache memory" in the container log). Start models one at a time: two loading at
@@ -387,6 +388,30 @@ services:
       --enable-auto-tool-choice
       --compilation-config '{"pass_config":{"fuse_act_quant":true}}'
       --gpu-memory-utilization 0.80
+
+  # ---------------------------------------------------------------- :8008 whisper (speech to text; opt-in)
+  # Not a chat model: it answers /v1/audio/transcriptions (and /translations) only, so it is left out of
+  # Open WebUI's seed URLs. pixel-dog reaches it as http://stt:8000/v1; the alias is the role, so a different
+  # STT backend can take the port later without touching pixel-dog.
+  vllm-whisper:
+    <<: *vllm
+    profiles: [whisper]
+    container_name: vllm-whisper
+    ports: ["127.0.0.1:8008:8000"]
+    networks:
+      default:
+        aliases: [stt]
+    labels:
+      switchboard.name: "Whisper large-v3-turbo"
+      switchboard.note: "openai fp16; speech to text (/v1/audio/transcriptions), no chat. The `stt` backend for Pixel Dog"
+    command: >
+      vllm serve openai/whisper-large-v3-turbo
+      --served-model-name openai/whisper-large-v3-turbo
+      --host 0.0.0.0 --port 8000
+      --max-model-len 448
+      --max-num-seqs 8
+      --gpu-memory-utilization 0.05
+      --limit-mm-per-prompt '{"audio": 1}'
 
 volumes:
   vllm-cache:
