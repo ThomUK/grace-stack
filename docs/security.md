@@ -10,7 +10,8 @@ the tailnet, so each service's own login is the second layer:
 | Grafana :3000, Open WebUI :12000 | their own user accounts |
 | DGX Dashboard :11000 | NVIDIA's own login |
 | switchboard :8080 | password + TOTP (see [switchboard.md](switchboard.md#login)). It holds the Docker socket, which is root-equivalent on the host |
-| vLLM APIs :8000–:8006 | **none yet** (`--api-key` is the fix; pending) |
+| vLLM APIs :8000–:8007 | **none yet** (`--api-key` is the fix; pending) |
+| pixel-dog :8765 | bound to **0.0.0.0**, so reachable from the LAN as well as the tailnet: ESP32 devices cannot join the tailnet. Docker publishes it past any host firewall. The first WebSocket message must carry a device token minted on grace, compared by hash; anything else is closed. See [pixel-dog.md](pixel-dog.md) |
 
 - cadvisor is `privileged`; cadvisor and node-exporter mount the host filesystem read-only.
 - If your tailnet devices are *tagged* (common with auth keys), `tailscale serve` adds no user identity headers, so
@@ -23,7 +24,7 @@ the tailnet, so each service's own login is the second layer:
         { "src": ["tag:laptop", "tag:phone"], "dst": ["tag:grace"], "ip": ["tcp:8080", "tcp:11000"] },
         // Grafana, Open WebUI and the model APIs: those two plus any machine that should call the models
         { "src": ["tag:laptop", "tag:phone", "tag:agents"], "dst": ["tag:grace"],
-          "ip": ["tcp:3000", "tcp:12000", "tcp:8000-8006"] }
+          "ip": ["tcp:3000", "tcp:12000", "tcp:8000-8007"] }
         // plus whatever else the tailnet needs (SSH to grace, your own devices to each other)
       ]
 

@@ -3,7 +3,8 @@
 A self-hosted LLM stack for one NVIDIA GB10 box (here an ASUS Ascent GX10, the DGX Spark class: 128 GB of
 unified memory shared by CPU and GPU). vLLM serves a handful of open models; a web **switchboard** starts,
 stops and swaps them inside that one memory pool, behind its own login; Open WebUI gives you a chat window;
-Grafana watches the GPU and the token rates. Everything binds to loopback and is reached over Tailscale.
+Grafana watches the GPU and the token rates. Everything binds to loopback and is reached over Tailscale,
+except the voice port, which ESP32 devices reach over the LAN.
 
 It is for anyone with the same class of machine who wants the whole thing running in an afternoon, and for
 anyone who wants to see how a one-box inference setup fits together: which quants fit beside which, why models
@@ -19,8 +20,9 @@ This README and the `docs/` folder are also rendered at <https://thomuk.github.i
     .env                    secrets and per-machine knobs (gitignored); .env.example is the template
     models/                 vLLM endpoints       compose.yml, vllm/Dockerfile
     apps/                   Open WebUI, switchboard compose.yml, switchboard/
+    apps/pixel-dog/         voice-assistant orchestrator  compose.yaml (image built from a private repo)
     monitoring/             Prometheus + Grafana compose.yml, prometheus/, grafana/
-    docs/                   the detail: models, switchboard, security, monitoring, clients
+    docs/                   the detail: models, switchboard, security, monitoring, clients, pixel-dog
 
 Each module is a folder with its own `compose.yml`; `include:` assembles them into one project, so every
 service shares a network and container names resolve across modules. To run a subset elsewhere, copy the
@@ -33,6 +35,7 @@ folders you want and list only those in `docker-compose.yml`.
 | models | `vllm-*`, one per model variant | 127.0.0.1:8000–8007 | variants of one model share a port and a name; one of them at a time |
 | chat | open-webui | 127.0.0.1:12000 | own accounts; data in the external volume `open-webui` |
 | control | switchboard | 127.0.0.1:8080 | start / stop / swap models, presets; own login; holds the Docker socket |
+| voice | pixel-dog | 0.0.0.0:8765 | Pixel Dog orchestrator for ESP32 voice devices; the one port open on every interface, token per device |
 | monitoring | grafana | 127.0.0.1:3000 | four dashboards; prometheus, dcgm-, node-exporter and cadvisor stay internal |
 
 | port | served as | model |
@@ -92,6 +95,7 @@ each service's own login is the second layer:
 | DGX Dashboard :11000 | NVIDIA's own login |
 | switchboard :8080 | password + TOTP; it holds the Docker socket, which is root-equivalent on the host |
 | vLLM APIs :8000–:8007 | **none yet** (`--api-key` is the fix; pending) |
+| pixel-dog :8765 (**all interfaces**: LAN and tailnet) | per-device bearer token, checked before anything else is read |
 
 Restricting the admin ports to specific devices with Tailscale ACLs, and what the switchboard login does and
 does not defend against: [docs/security.md](docs/security.md).
@@ -118,5 +122,6 @@ A container that exists but lost its port mapping needs `up -d --force-recreate 
 - [docs/security.md](docs/security.md): what is exposed, Tailscale ACL grants, the auth trade-offs.
 - [docs/monitoring.md](docs/monitoring.md): the Grafana dashboards, how they are generated, metric names.
 - [docs/clients.md](docs/clients.md): Open WebUI connections and backup, VS Code model entries.
+- [docs/pixel-dog.md](docs/pixel-dog.md): the voice-assistant module, where its image comes from, the backends it waits on.
 
 MIT licence.
