@@ -18,7 +18,7 @@ This README and the `docs/` folder are also rendered at <https://thomuk.github.i
 
     docker-compose.yml      include: one line per module
     .env                    secrets and per-machine knobs (gitignored); .env.example is the template
-    models/                 vLLM endpoints       compose.yml, vllm/Dockerfile
+    models/                 vLLM endpoints       compose.yml, vllm/Dockerfile; kokoro/ text to speech
     apps/                   Open WebUI, switchboard compose.yml, switchboard/
     apps/pixel-dog/         voice-assistant orchestrator  compose.yaml (image built from a private repo)
     monitoring/             Prometheus + Grafana compose.yml, prometheus/, grafana/
@@ -35,6 +35,7 @@ folders you want and list only those in `docker-compose.yml`.
 | models | `vllm-*`, one per model variant | 127.0.0.1:8000–8008 | variants of one model share a port and a name; one of them at a time |
 | chat | open-webui | 127.0.0.1:12000 | own accounts; data in the external volume `open-webui` |
 | control | switchboard | 127.0.0.1:8080 | start / stop / swap models, presets; own login; holds the Docker socket |
+| speech | kokoro | 127.0.0.1:8880 | Kokoro-82M text to speech, OpenAI-style `/v1/audio/speech`; always on, GPU |
 | voice | pixel-dog | 0.0.0.0:8765 | Pixel Dog orchestrator for ESP32 voice devices; the one port open on every interface, token per device |
 | monitoring | grafana | 127.0.0.1:3000 | four dashboards; prometheus, dcgm-, node-exporter and cadvisor stay internal |
 

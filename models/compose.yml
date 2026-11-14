@@ -20,6 +20,10 @@
 # Memory: vLLM sees 121.6 GiB. Weights + ~7 GiB of runtime overhead come out of GMU × 121.6; the rest is
 # KV cache ("Available KV cache memory" in the container log). Start models one at a time: two loading at
 # once mismeasure the shared pool and one of them ends up with no KV cache (the switchboard serialises this).
+# The measurement is the drop in host *available* RAM while the model loads and profiles, so it also moves
+# with page-cache reclaim and with anything else allocating at the time (an image pull, another service's
+# footprint): the same flags gave qwen36moe 0.3–1.5 GiB of KV on one night and 9.3 GiB an hour later.
+# `--kv-cache-memory <bytes>` pins the KV size and takes the guesswork out; see docs/models.md.
 #
 # Every service is behind a profile named after it (minus `vllm-`), so a plain `docker compose up -d`
 # leaves models alone: start them from the switchboard, or `docker compose --profile X up -d vllm-X`.

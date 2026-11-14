@@ -1,0 +1,19 @@
+# kokoro — Kokoro-82M text to speech behind Kokoro-FastAPI (OpenAI-style /v1/audio/speech, streamed PCM).
+# The TTS backend for Pixel Dog (docs/pixel-dog.md); small enough to stay up alongside whatever vLLM runs,
+# so it has no profile. Not listed by the switchboard (not a `vllm serve`).
+
+services:
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-gpu:v0.10.0-cu129-arm64   # the arm64 build behind :latest, pinned
+    container_name: kokoro
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports: ["127.0.0.1:8880:8880"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8880/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5

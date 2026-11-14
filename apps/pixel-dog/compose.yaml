@@ -1,6 +1,7 @@
 # pixel-dog — voice-assistant orchestrator for ESP32 devices; see grace-stack's docs/pixel-dog.md.
 # The image is built from the private pixel-dog repo, which also holds the master of this file
-# (deploy/grace-stack/). PIXELDOG_DATA_DIR (profiles + device tokens) is set in .env.
+# (deploy/grace-stack/). PIXELDOG_DATA_DIR (profiles + device tokens) and, optionally, the LLM
+# endpoint and model are set in .env; STT and TTS are the stack's `stt` alias and `kokoro`.
 services:
   pixel-dog:
     image: grace/pixel-dog:latest
@@ -16,8 +17,8 @@ services:
       PIXELDOG_STT_URL: http://stt:8000/v1
       PIXELDOG_STT_MODEL: openai/whisper-large-v3-turbo
       PIXELDOG_TTS_URL: http://kokoro:8880/v1
-      PIXELDOG_DEFAULT_LLM_URL: http://vllm-voice:8000/v1
-      PIXELDOG_DEFAULT_LLM_MODEL: voice-llm
+      PIXELDOG_DEFAULT_LLM_URL: ${PIXELDOG_DEFAULT_LLM_URL:-http://vllm-voice:8000/v1}     # any OpenAI-style chat endpoint
+      PIXELDOG_DEFAULT_LLM_MODEL: ${PIXELDOG_DEFAULT_LLM_MODEL:-voice-llm}
       PIXELDOG_TZ: Europe/London
       LOG_LEVEL: INFO
     logging:

@@ -14,7 +14,8 @@ and that repo's `deploy/grace-stack/apps/pixel-dog/compose.yaml` is the master c
 |---|---|
 | `PIXELDOG_DATA_DIR` | folder holding `profiles/` (per-person settings, device tokens, conversation logs). Personal data: stays on this machine, never in either repo |
 | `PIXELDOG_UID`, `PIXELDOG_GID` | the container runs as this user (default 1000:1000) and must own the data folder |
-| `PIXELDOG_PIPELINE` | `echo` (plays your speech back; the default), `fake` (STT→LLM→TTS with stubs), `full` |
+| `PIXELDOG_PIPELINE` | `echo` (plays your speech back; the default), `fake` (STT→LLM→TTS with stubs), `full` (set here once the three backends run; `/readyz` then reports each) |
+| `PIXELDOG_DEFAULT_LLM_URL`, `PIXELDOG_DEFAULT_LLM_MODEL` | which chat endpoint and served name answer, until a dedicated voice model exists |
 
 The image `grace/pixel-dog:latest` is **not built by this repo**. Build it from the private repo's `server/`
 folder (its `make build` tags it with the git SHA as well as `latest`), then `docker compose up -d pixel-dog`
@@ -32,15 +33,16 @@ are open and show only the pipeline mode, version and counts.
 
 ## Backends (pending)
 
-`full` mode expects three services. The compose module already names them; one exists so far:
+`full` mode expects three services. The compose module already names them; two exist, the third is
+stood in for by an existing chat model via `.env`:
 
 | env var in the module | service | planned |
 |---|---|---|
 | `PIXELDOG_STT_URL=http://stt:8000/v1` | `stt` | **done**: `vllm-whisper` in `models/compose.yml` (port 8008, profile `whisper`), with `stt` as a network alias. Whether another server beats vLLM on latency is still open |
-| `PIXELDOG_TTS_URL=http://kokoro:8880/v1` | `kokoro` | Kokoro-FastAPI, streamed PCM; aarch64 GPU image availability is the spike, CPU is the fallback |
-| `PIXELDOG_DEFAULT_LLM_URL=http://vllm-voice:8000/v1` | `vllm-voice` | a small fast instruct model served as `voice-llm`, chosen for time to first sentence |
+| `PIXELDOG_TTS_URL=http://kokoro:8880/v1` | `kokoro` | **done**: `models/kokoro/compose.yaml`, the upstream arm64 GPU image (CUDA 12.9 torch runs on GB10 with a capability warning), port 8880, always on, ~2 GiB; 6 s of speech in 0.2 s warm |
+| `PIXELDOG_DEFAULT_LLM_URL=http://vllm-voice:8000/v1` | `vllm-voice` | **interim**: `.env` overrides URL and model to any chat service here (currently `vllm-qwen36moe`, `qwen3.6-35b-a3b`); pixel-dog sends `enable_thinking: false` per request, so the vLLM flags stay as they are. A dedicated small voice model is still the plan |
 
-The GPU memory fractions of the existing models will need lowering so all three fit alongside them; record
+The voice set today is `vllm-qwen36moe` (GMU 0.25) + `vllm-whisper` (0.05) + `kokoro` (~2 GiB, no fraction), well inside the cap, so nothing else needed lowering; a dedicated voice LLM may change that; record
 the chosen values in [models.md](models.md) when they land. Until then `echo` and `fake` work with nothing else
 running.
 

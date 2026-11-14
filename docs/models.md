@@ -41,6 +41,11 @@ port, a `tailscale serve` line.
 The switchboard shows each card's size on disk, weights in memory and max context live, with a link to the
 origin model card.
 
+Not vLLM and not on a card: `kokoro` (`models/kokoro/compose.yaml`) serves Kokoro-82M text to speech on
+127.0.0.1:8880 from the upstream Kokoro-FastAPI arm64 GPU image (CUDA 12.9; torch warns about GB10's
+capability 12.1 but runs), always on, about 2 GiB, for Pixel Dog. It has no memory fraction, so the
+switchboard's sum rule does not see it.
+
 Tailscale serve, one line per port if you prefer them explicit:
 
     sudo tailscale serve --bg --https=8000  http://127.0.0.1:8000    # gemma API
@@ -52,6 +57,18 @@ Tailscale serve, one line per port if you prefer them explicit:
     sudo tailscale serve --bg --https=8006  http://127.0.0.1:8006    # nemotron omni API
     sudo tailscale serve --bg --https=8007  http://127.0.0.1:8007    # qwen3.8-flash-next API
     sudo tailscale serve --bg --https=8008  http://127.0.0.1:8008    # whisper transcription API
+
+## Memory measurement on GB10
+vLLM has no device memory counter here: it reads host *available* RAM before and after loading and profiling,
+and treats the difference as its own use. That difference depends on how much page cache the kernel chose to
+reclaim in the window and on anything else allocating at the time. Seen on 2026-11-14: `vllm-qwen36moe` at GMU
+0.25 got between 0.3 and 1.5 GiB of KV cache across nine attempts while a 10 GB image pull was unpacking and
+`vllm-whisper` was resident, then 9.3 GiB with the same flags once whisper was stopped (it needs 3.1 GiB for its
+context length). The symptom is `ValueError: To serve at least one request with the model's max seq len`
+in a restart loop. Two ways out: avoid other memory events during a start (pulls, builds, other model
+starts), or pin the KV size with `--kv-cache-memory <bytes>` alongside `--gpu-memory-utilization`, which vLLM
+then uses only for the switchboard's sum rule. The log line `Replace gpu_memory_utilization config with
+--kv-cache-memory=...` on a healthy start gives the number to pin.
 
 ## Performance (GB10)
 - Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts).
