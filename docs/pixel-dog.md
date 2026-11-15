@@ -17,10 +17,12 @@ and that repo's `deploy/grace-stack/apps/pixel-dog/compose.yaml` is the master c
 | `PIXELDOG_PIPELINE` | `echo` (plays your speech back; the default), `fake` (STT→LLM→TTS with stubs), `full` (set here once the three backends run; `/readyz` then reports each) |
 | `PIXELDOG_DEFAULT_LLM_URL`, `PIXELDOG_DEFAULT_LLM_MODEL` | which chat endpoint and served name answer, until a dedicated voice model exists |
 
-The image `grace/pixel-dog:latest` is **not built by this repo**. Build it from the private repo's `server/`
-folder (its `make build` tags it with the git SHA as well as `latest`), then `docker compose up -d pixel-dog`
-here; `make deploy` there does both. Roll back by re-tagging an older SHA as `latest` and running `up -d` again.
-Profiles and tokens are also minted from that repo (`make profile`, `make token`).
+The image `grace/pixel-dog:latest` is **not built by this repo**. It is built and deployed from the private
+repo: `make update` there pulls the latest `main`, builds the image from `server/` (tagged with the git SHA as
+well as `latest`), recreates the container in this stack and waits until `/healthz` reports the new SHA.
+`make status` compares what is running with the repo, and `make rollback TAG=<sha>` re-tags an older build as
+`latest` and restarts. None of these copy the compose module: if the master copy changes, copy it here by hand
+and commit it. Profiles and tokens are also minted from that repo (`make profile`, `make token`).
 
 ## Port and exposure
 
@@ -48,9 +50,9 @@ running.
 
 ## Day to day
 
-    docker compose up -d pixel-dog        # (re)create after an image rebuild or .env change
+    docker compose up -d pixel-dog        # (re)create after a .env or compose change
     docker compose logs -f pixel-dog      # one JSON timing record per turn
-    curl localhost:8765/healthz           # {"status":"ok","pipeline":"echo",...}
+    curl localhost:8765/healthz           # {"status":"ok","git_sha":"a6c0604","pipeline":"full",...}
 
 The switchboard ignores this service (it only lists `vllm serve` commands), and Prometheus does not scrape it:
 the orchestrator has no `/metrics` endpoint yet.
