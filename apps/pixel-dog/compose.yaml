@@ -7,6 +7,7 @@ services:
     image: grace/pixel-dog:latest
     container_name: pixel-dog
     restart: unless-stopped
+    stop_grace_period: 30s # time to save memory from the last conversations
     user: "${PIXELDOG_UID:-1000}:${PIXELDOG_GID:-1000}"
     ports:
       - "8765:8765" # LAN: ESP32s can't join Tailscale
@@ -20,6 +21,9 @@ services:
       PIXELDOG_DEFAULT_LLM_URL: ${PIXELDOG_DEFAULT_LLM_URL:-http://vllm-voice:8000/v1}     # any OpenAI-style chat endpoint
       PIXELDOG_DEFAULT_LLM_MODEL: ${PIXELDOG_DEFAULT_LLM_MODEL:-voice-llm}
       PIXELDOG_TZ: Europe/London
+      # Weather tool (Open-Meteo): home coordinates, set in .env. Unset = no weather tool.
+      PIXELDOG_HOME_LAT: ${PIXELDOG_HOME_LAT:-}
+      PIXELDOG_HOME_LON: ${PIXELDOG_HOME_LON:-}
       LOG_LEVEL: INFO
     logging:
       driver: json-file
