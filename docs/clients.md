@@ -4,10 +4,11 @@
 
 ## Open WebUI
 Admin → Settings → Connections: one `http://<container>:8000/v1` per model service (container port, not host
-mapping; key anything), all eleven seeded by `OPENAI_API_BASE_URLS` in `apps/compose.yml`. Siblings share a served
+mapping; key anything), all twelve seeded by `OPENAI_API_BASE_URLS` in `apps/compose.yml`. Siblings share a served
 name but only one is up, so each model is listed once. Ollama API off. Saved connections in the volume override
 the env seeds, so add new services there by hand.
-Audio: STT Whisper (Local), TTS Web API. The mic needs HTTPS, which is why Open WebUI is reached through
+Audio: STT Whisper (Local) on the CPU, or, with `vllm-whisper` running, Admin → Settings → Audio → STT engine
+OpenAI, URL `http://vllm-whisper:8000/v1`, model `openai/whisper-large-v3-turbo`. TTS Web API. The mic needs HTTPS, which is why Open WebUI is reached through
 `tailscale serve` on the tailnet name rather than by IP.
 
 ### Backup / restore

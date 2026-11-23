@@ -1,0 +1,33 @@
+# pixel-dog — voice-assistant orchestrator for ESP32 devices; see grace-stack's docs/pixel-dog.md.
+# The image is built from the private pixel-dog repo, which also holds the master of this file
+# (deploy/grace-stack/). PIXELDOG_DATA_DIR (profiles + device tokens) and, optionally, the LLM
+# endpoint and model are set in .env; STT and TTS are the stack's `stt` alias and `kokoro`.
+services:
+  pixel-dog:
+    image: grace/pixel-dog:latest
+    container_name: pixel-dog
+    restart: unless-stopped
+    stop_grace_period: 30s # time to save memory from the last conversations
+    user: "${PIXELDOG_UID:-1000}:${PIXELDOG_GID:-1000}"
+    ports:
+      - "8765:8765" # LAN: ESP32s can't join Tailscale
+    volumes:
+      - ${PIXELDOG_DATA_DIR:?set PIXELDOG_DATA_DIR in .env}/profiles:/data/profiles
+    environment:
+      PIXELDOG_PIPELINE: ${PIXELDOG_PIPELINE:-echo} # echo | fake | full
+      PIXELDOG_STT_URL: http://stt:8000/v1
+      PIXELDOG_STT_MODEL: openai/whisper-large-v3-turbo
+      PIXELDOG_TTS_URL: http://kokoro:8880/v1
+      PIXELDOG_DEFAULT_LLM_URL: ${PIXELDOG_DEFAULT_LLM_URL:-http://vllm-voice:8000/v1}     # any OpenAI-style chat endpoint
+      PIXELDOG_DEFAULT_LLM_MODEL: ${PIXELDOG_DEFAULT_LLM_MODEL:-voice-llm}
+      PIXELDOG_TZ: Europe/London
+      # Weather tool (Open-Meteo): home coordinates, set in .env. Unset = no weather tool.
+      PIXELDOG_HOME_LAT: ${PIXELDOG_HOME_LAT:-}
+      PIXELDOG_HOME_LON: ${PIXELDOG_HOME_LON:-}
+      # Wikipedia tool: the stack's kiwix (apps/kiwix). Set PIXELDOG_KIWIX_URL= (empty) in
+      # .env to switch the tool off.
+      PIXELDOG_KIWIX_URL: ${PIXELDOG_KIWIX_URL-http://kiwix:8080}
+      LOG_LEVEL: INFO
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }

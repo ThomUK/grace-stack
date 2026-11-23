@@ -9,7 +9,13 @@ name: grace-stack
 include:
   - path: models/compose.yml
     env_file: .env
+  - path: models/kokoro/compose.yaml
+    env_file: .env
   - path: apps/compose.yml
+    env_file: .env
+  - path: apps/pixel-dog/compose.yaml
+    env_file: .env
+  - path: apps/kiwix/compose.yaml
     env_file: .env
   - path: monitoring/compose.yml
     env_file: .env
