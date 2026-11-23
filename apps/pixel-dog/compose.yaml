@@ -24,6 +24,9 @@ services:
       # Weather tool (Open-Meteo): home coordinates, set in .env. Unset = no weather tool.
       PIXELDOG_HOME_LAT: ${PIXELDOG_HOME_LAT:-}
       PIXELDOG_HOME_LON: ${PIXELDOG_HOME_LON:-}
+      # Wikipedia tool: the stack's kiwix (apps/kiwix). Set PIXELDOG_KIWIX_URL= (empty) in
+      # .env to switch the tool off.
+      PIXELDOG_KIWIX_URL: ${PIXELDOG_KIWIX_URL-http://kiwix:8080}
       LOG_LEVEL: INFO
     logging:
       driver: json-file

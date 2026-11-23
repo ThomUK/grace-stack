@@ -21,8 +21,9 @@ This README and the `docs/` folder are also rendered at <https://thomuk.github.i
     models/                 vLLM endpoints       compose.yml, vllm/Dockerfile; kokoro/ text to speech
     apps/                   Open WebUI, switchboard compose.yml, switchboard/
     apps/pixel-dog/         voice-assistant orchestrator  compose.yaml (image built from a private repo)
+    apps/kiwix/             offline Wikipedia for Pixel Dog  compose.yaml (kiwix-serve, .zim files from .env)
     monitoring/             Prometheus + Grafana compose.yml, prometheus/, grafana/
-    docs/                   the detail: models, switchboard, security, monitoring, clients, pixel-dog
+    docs/                   the detail: models, switchboard, security, monitoring, clients, pixel-dog, kiwix
 
 Each module is a folder with its own `compose.yml`; `include:` assembles them into one project, so every
 service shares a network and container names resolve across modules. To run a subset elsewhere, copy the
@@ -37,6 +38,7 @@ folders you want and list only those in `docker-compose.yml`.
 | control | switchboard | 127.0.0.1:8080 | start / stop / swap models, presets; own login; holds the Docker socket |
 | speech | kokoro | 127.0.0.1:8880 | Kokoro-82M text to speech, OpenAI-style `/v1/audio/speech`; always on, GPU |
 | voice | pixel-dog | 0.0.0.0:8765 | Pixel Dog orchestrator for ESP32 voice devices; the one port open on every interface, token per device |
+| reference | kiwix | none (stack network only) | kiwix-serve with offline Wikipedia `.zim` files; Pixel Dog's wikipedia tool reads it at `http://kiwix:8080` |
 | monitoring | grafana | 127.0.0.1:3000 | four dashboards; prometheus, dcgm-, node-exporter and cadvisor stay internal |
 
 | port | served as | model |
@@ -125,5 +127,6 @@ A container that exists but lost its port mapping needs `up -d --force-recreate 
 - [docs/monitoring.md](docs/monitoring.md): the Grafana dashboards, how they are generated, metric names.
 - [docs/clients.md](docs/clients.md): Open WebUI connections and backup, VS Code model entries.
 - [docs/pixel-dog.md](docs/pixel-dog.md): the voice-assistant module, where its image comes from, the backends it waits on.
+- [docs/kiwix.md](docs/kiwix.md): the offline Wikipedia server behind Pixel Dog's wikipedia tool, and the `.zim` files it serves.
 
 MIT licence.

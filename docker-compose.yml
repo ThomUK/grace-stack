@@ -15,5 +15,7 @@ include:
     env_file: .env
   - path: apps/pixel-dog/compose.yaml
     env_file: .env
+  - path: apps/kiwix/compose.yaml
+    env_file: .env
   - path: monitoring/compose.yml
     env_file: .env

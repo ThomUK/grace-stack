@@ -1,0 +1,17 @@
+# kiwix: an offline copy of Wikipedia for pixel-dog's wikipedia tool (WIKIPEDIA_TOOL.md).
+# The master of this file is in the pixel-dog repo (deploy/grace-stack/apps/kiwix/).
+# KIWIX_DATA_DIR (the folder of .zim files) is set in .env. CPU only.
+services:
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:3.8.2 # official images are on ghcr.io only
+    container_name: kiwix
+    restart: unless-stopped
+    command: ["*.zim"] # serve every .zim in the folder; restart to pick up a new one
+    volumes:
+      - ${KIWIX_DATA_DIR:?set KIWIX_DATA_DIR in .env}:/data:ro
+    # No `ports:` on purpose: kiwix listens on 8080, which the DGX dashboard uses on
+    # grace. pixel-dog reaches it at http://kiwix:8080 on the stack's network. To browse
+    # it by hand, add `ports: ["8090:8080"]` or use `tailscale serve`.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

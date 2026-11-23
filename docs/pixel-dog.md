@@ -16,6 +16,8 @@ and that repo's `deploy/grace-stack/apps/pixel-dog/compose.yaml` is the master c
 | `PIXELDOG_UID`, `PIXELDOG_GID` | the container runs as this user (default 1000:1000) and must own the data folder |
 | `PIXELDOG_PIPELINE` | `echo` (plays your speech back; the default), `fake` (STT→LLM→TTS with stubs), `full` (set here once the three backends run; `/readyz` then reports each) |
 | `PIXELDOG_DEFAULT_LLM_URL`, `PIXELDOG_DEFAULT_LLM_MODEL` | which chat endpoint and served name answer, until a dedicated voice model exists |
+| `PIXELDOG_HOME_LAT`, `PIXELDOG_HOME_LON` | home coordinates for the weather tool (Open-Meteo); unset means no weather tool |
+| `PIXELDOG_KIWIX_URL` | where the wikipedia tool finds kiwix; defaults to `http://kiwix:8080`, set it empty to switch the tool off |
 
 The image `grace/pixel-dog:latest` is **not built by this repo**. It is built and deployed from the private
 repo: `make update` there pulls the latest `main`, builds the image from `server/` (tagged with the git SHA as
@@ -47,6 +49,19 @@ stood in for by an existing chat model via `.env`:
 The voice set today is `vllm-qwen36moe` (GMU 0.25) + `vllm-whisper` (0.05) + `kokoro` (~2 GiB, no fraction), well inside the cap, so nothing else needed lowering; a dedicated voice LLM may change that; record
 the chosen values in [models.md](models.md) when they land. Until then `echo` and `fake` work with nothing else
 running.
+
+## Wikipedia tool
+
+Outline only; the design and its open questions are in `WIKIPEDIA_TOOL.md` in the private repo.
+
+- The orchestrator offers the LLM one tool, `wiki_lookup`, which takes a few keyword search terms and returns a
+  short plain-text extract of the best-matching article, or `not_found`.
+- It reads the stack's own [kiwix](kiwix.md) at `PIXELDOG_KIWIX_URL` (default `http://kiwix:8080`), so lookups
+  never leave this machine. With the variable empty, or kiwix unreachable, the tool is not offered.
+- Book names carry a date, so the tool discovers them from kiwix's catalogue rather than hard-coding them.
+- Each profile chooses its book (`wiki_book`: `en_mini` by default, `en_simple` for kids) and must list
+  `wiki_lookup` in its `tools` allowlist.
+- To do: measured lookup latency, and how to check from `/readyz` or the logs that the tool is registered.
 
 ## Day to day
 
