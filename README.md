@@ -33,7 +33,7 @@ folders you want and list only those in `docker-compose.yml`.
 
 | role | service(s) | port | notes |
 |---|---|---|---|
-| models | `vllm-*`, one per model variant | 127.0.0.1:8000–8008 | variants of one model share a port and a name; one of them at a time |
+| models | `vllm-*`, one per model variant | 127.0.0.1:8000–8009 | variants of one model share a port and a name; one of them at a time |
 | chat | open-webui | 127.0.0.1:12000 | own accounts; data in the external volume `open-webui` |
 | control | switchboard | 127.0.0.1:8080 | start / stop / swap models, presets; own login; holds the Docker socket |
 | speech | kokoro | 127.0.0.1:8880 | Kokoro-82M text to speech, OpenAI-style `/v1/audio/speech`; always on, GPU |
@@ -52,6 +52,7 @@ folders you want and list only those in `docker-compose.yml`.
 | 8006 | `nemotron-3-nano-omni-30b-a3b` | Nemotron 3 Nano Omni 30B-A3B, image + video in |
 | 8007 | `qwen3.8-flash-next` | Qwen3.8-Flash-Next 125B-A6B, image + video in; community vLLM image, runs alone |
 | 8008 | `openai/whisper-large-v3-turbo` | Whisper large-v3-turbo, speech to text only (`/v1/audio/transcriptions`); the `stt` backend for Pixel Dog |
+| 8009 | `inkling-2-mini` | Inkling 2 Mini 26B-A3.4B (looped MoE), image in; vLLM nightly image |
 
 Which quant, how much memory each takes and the vLLM flags are in `models/compose.yml` and
 [docs/models.md](docs/models.md); the switchboard shows size, context and origin for each one live.
@@ -69,7 +70,7 @@ Which quant, how much memory each takes and the vLLM flags are in `models/compos
 
 Then publish the ports to your tailnet (Funnel stays off):
 
-    for p in 3000 12000 8080 11000 8000 8001 8002 8003 8004 8005 8006 8007 8008; do
+    for p in 3000 12000 8080 11000 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
       sudo tailscale serve --bg --https=$p http://127.0.0.1:$p
     done
 
@@ -98,7 +99,7 @@ each service's own login is the second layer:
 | Grafana :3000, Open WebUI :12000 | their own user accounts |
 | DGX Dashboard :11000 | NVIDIA's own login |
 | switchboard :8080 | password + TOTP; it holds the Docker socket, which is root-equivalent on the host |
-| vLLM APIs :8000–:8008 | **none yet** (`--api-key` is the fix; pending) |
+| vLLM APIs :8000–:8009 | **none yet** (`--api-key` is the fix; pending) |
 | pixel-dog :8765 (**all interfaces**: LAN and tailnet) | per-device bearer token, checked before anything else is read |
 
 Restricting the admin ports to specific devices with Tailscale ACLs, and what the switchboard login does and

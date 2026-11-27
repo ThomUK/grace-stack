@@ -37,6 +37,7 @@ port, a `tailscale serve` line.
 | vllm-nemotron-omni | 8006 | `nemotron-3-nano-omni-30b-a3b` | nvidia FP8; image + video in; reasoning; fp8 KV cache; GMU 0.45 |
 | vllm-qwen38flash | 8007 | `qwen3.8-flash-next` | nvidia FP4 QAD of the 125B-A6B MoE, 95 GiB + n-gram table on disk; image + video in; MTP 4 drafts; GMU 0.80, runs alone; **community image**, see below |
 | vllm-whisper | 8008 | `openai/whisper-large-v3-turbo` | openai fp16, 1.6 GiB; speech to text only, `/v1/audio/transcriptions`; not in Open WebUI's seed list; network alias `stt`; GMU 0.05 (weights + activations measure 3.3 GiB; the rest is KV cache, ~25k tokens) |
+| vllm-inkling2mini | 8009 | `inkling-2-mini` | Thinking Machines NVFP4 + MXFP8, 19 GiB; looped MoE, 3.4B active; image in; reasoning; DSpark 7 drafts; GMU 0.40; **vLLM nightly image**, see below |
 
 The switchboard shows each card's size on disk, weights in memory and max context live, with a link to the
 origin model card.
@@ -57,6 +58,7 @@ Tailscale serve, one line per port if you prefer them explicit:
     sudo tailscale serve --bg --https=8006  http://127.0.0.1:8006    # nemotron omni API
     sudo tailscale serve --bg --https=8007  http://127.0.0.1:8007    # qwen3.8-flash-next API
     sudo tailscale serve --bg --https=8008  http://127.0.0.1:8008    # whisper transcription API
+    sudo tailscale serve --bg --https=8009  http://127.0.0.1:8009    # inkling-2-mini API
 
 ## Memory measurement on GB10
 vLLM has no device memory counter here: it reads host *available* RAM before and after loading and profiling,
@@ -97,6 +99,28 @@ from the model card. The n-gram table is streamed from the HF cache on disk (`VL
 the cache on the NVMe. At GMU 0.80 nothing else fits beside it; the first start compiles and builds that table and
 can take well over the usual four minutes, hence its longer health `start_period`. The tag is pinned to a dated nightly
 on purpose; `latest` moves with the author's builds, so bump the date deliberately after testing.
+
+## Inkling 2 Mini and the nightly image
+`thinkingmachines/Inkling-2-Mini` is a 26B-parameter MoE (3.4B active) whose 12 middle layers run three times
+with shared weights, so each token makes 48 layer visits from 24 layers of weights. That architecture
+(`Inkling2LoopForConditionalGeneration`) is in vLLM main only, 0.35 at the earliest, so `vllm-inkling2mini` runs
+`vllm/vllm-openai:nightly-<commit>` rather than `grace/vllm` (0.31), with its own compile-cache volume. The tag
+names one commit on purpose; move it deliberately, and move the service back to `grace/vllm` once that image is
+on a release that has the model. Flags follow the [vLLM recipe](https://recipes.vllm.ai/thinkingmachines/Inkling-2-Mini)
+for DGX Spark:
+
+- Context is capped at 262,144 tokens (the model goes to 1M). Each looped layer keeps a KV cache per pass, so
+  cache is large per token: about 55 KB measured here.
+- Reasoning and tool calls both use the `inkling` parsers. Thinking depth is the request field `reasoning_effort`:
+  `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; unset means 0.9 (`high`). It shortens the thinking but
+  does not remove it: at `none` a simple question still gets a few hundred characters of reasoning first.
+  `chat_template_kwargs: {"enable_thinking": false}` has no effect on this model.
+- Speculative decoding is `dspark` with the draft model shipped inside the checkpoint (`mtp.safetensors`, 0.6 GiB),
+  7 draft tokens per step. Image prompts are drafted from text only (a startup warning says so).
+- Measured at GMU 0.40 with nothing else on the GPU but whisper and kokoro: healthy 4 minutes after a cold start
+  (weights load in 98 s), 21.8 GiB for weights and runtime, 26.3 GiB of KV cache = 482k tokens, 1.84 full
+  262k contexts. Single stream, short prompts: roughly 35 to 90 tok/s depending on how well the drafts are accepted.
+  Text, image input and a tool call were each checked once.
 
 ## Why the vLLM image is three lines
 `vllm/vllm-openai:*-aarch64` ships vLLM, torch and FlashInfer built together. Pip-installing vLLM over an NVIDIA

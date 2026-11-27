@@ -75,6 +75,14 @@
       ]
     },
     {
+      "name": "Inkling 2 Mini + voice",
+      "note": "Inkling 2 Mini (image in, vLLM nightly image) beside Whisper",
+      "services": [
+        "vllm-inkling2mini",
+        "vllm-whisper"
+      ]
+    },
+    {
       "name": "All off",
       "note": "free the memory",
       "services": []
