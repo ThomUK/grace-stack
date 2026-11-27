@@ -46,7 +46,7 @@ stood in for by an existing chat model via `.env`:
 | `PIXELDOG_TTS_URL=http://kokoro:8880/v1` | `kokoro` | **done**: `models/kokoro/compose.yaml`, the upstream arm64 GPU image (CUDA 12.9 torch runs on GB10 with a capability warning), port 8880, always on, ~2 GiB; 6 s of speech in 0.2 s warm |
 | `PIXELDOG_DEFAULT_LLM_URL=http://vllm-voice:8000/v1` | `vllm-voice` | **interim**: `.env` overrides the URL to any chat service here (tried so far: `vllm-qwen36moe`, `vllm-qwen38flash`, `vllm-inkling2mini`); pixel-dog sends `enable_thinking: false` per request, so the vLLM flags stay as they are. Inkling 2 Mini ignores that field and cannot stop thinking, so pixel-dog recognises it by name and instead sends `reasoning_effort: minimal`, waits 10 s rather than 5 s for the first word and adds 300 to `max_tokens` (the `MODEL_TRAITS` table in pixel-dog's `llm.py`): see [models.md](models.md). A dedicated small voice model is still the plan |
 
-The voice set today is `vllm-qwen36moe` (GMU 0.25) + `vllm-whisper` (0.05) + `kokoro` (~2 GiB, no fraction), well inside the cap, so nothing else needed lowering; a dedicated voice LLM may change that; record
+The voice set today is `vllm-qwen36moe` (GMU 0.25, KV cache pinned at 6 GiB so it starts reliably beside the other two) + `vllm-whisper` (0.05) + `kokoro` (~2 GiB, no fraction), well inside the cap, so nothing else needed lowering; a dedicated voice LLM may change that; record
 the chosen values in [models.md](models.md) when they land. Until then `echo` and `fake` work with nothing else
 running.
 

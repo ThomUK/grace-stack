@@ -6,7 +6,7 @@
 #   :8000  gemma4-12b                   vllm-gemma12            google bf16             GMU 0.30  chat, audio in
 #   :8001  qwen3.8-27b                  vllm-qwen38-nvfp4       nvidia modelopt NVFP4   GMU 0.35  dense coder, MTP 3 drafts (~17 tok/s)
 #                                       vllm-qwen38-fp8         Qwen FP8                GMU 0.45  MTP 3 drafts
-#   :8002  qwen3.6-35b-a3b              vllm-qwen36moe          RedHatAI NVFP4          GMU 0.25  MoE coder
+#   :8002  qwen3.6-35b-a3b              vllm-qwen36moe          RedHatAI NVFP4          GMU 0.25  MoE coder; KV cache pinned at 6 GiB
 #   :8003  ornith-1.5-35b-a3b           vllm-ornith15-nvfp4     ornith-ai NVFP4         GMU 0.30  MoE coder
 #                                       vllm-ornith15-agentic   primitive-ai NVFP4-FP8  GMU 0.30  GPTQ-calibrated on tool calls (the default)
 #                                       vllm-ornith15-bf16      ornith-ai bf16, 67 GiB  GMU 0.72  unquantised reference; runs alone
@@ -24,7 +24,8 @@
 # The measurement is the drop in host *available* RAM while the model loads and profiles, so it also moves
 # with page-cache reclaim and with anything else allocating at the time (an image pull, another service's
 # footprint): the same flags gave qwen36moe 0.3–1.5 GiB of KV on one night and 9.3 GiB an hour later.
-# `--kv-cache-memory <bytes>` pins the KV size and takes the guesswork out; see docs/models.md.
+# `--kv-cache-memory <bytes>` pins the KV size and takes the guesswork out: qwen36moe has it, since it shares
+# the machine with whisper and kokoro as Pixel Dog's LLM. See docs/models.md.
 #
 # Every service is behind a profile named after it (minus `vllm-`), so a plain `docker compose up -d`
 # leaves models alone: start them from the switchboard, or `docker compose --profile X up -d vllm-X`.
@@ -127,6 +128,9 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
 
   # ---------------------------------------------------------------- :8002 qwen3.6-35b-a3b
+  # KV cache pinned at 6 GiB (252k tokens, about two full contexts): measured, it came out at 0.3–1.6 GiB
+  # beside whisper, under the 3.1 GiB one 131k request needs, and the container restart-looped. With the pin
+  # vLLM ignores the GMU; it stays for the switchboard's sum (23.5 GiB weights + 6 GiB KV fits in 0.25).
   vllm-qwen36moe:
     <<: *vllm
     profiles: [qwen36moe]
@@ -144,6 +148,7 @@ services:
       --max-model-len 131072
       --max-num-seqs 4
       --gpu-memory-utilization 0.25
+      --kv-cache-memory 6442450944
       --enable-prefix-caching
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --enable-auto-tool-choice

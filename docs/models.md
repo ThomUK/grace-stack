@@ -27,7 +27,7 @@ port, a `tailscale serve` line.
 | vllm-gemma12 | 8000 | `gemma4-12b` | google bf16; audio in; GMU 0.30 |
 | vllm-qwen38-nvfp4 | 8001 | `qwen3.8-27b` | nvidia modelopt NVFP4, MTP 3 drafts; GMU 0.35 |
 | vllm-qwen38-fp8 | 8001 | `qwen3.8-27b` | Qwen FP8, MTP 3 drafts; GMU 0.45 |
-| vllm-qwen36moe | 8002 | `qwen3.6-35b-a3b` | RedHatAI NVFP4; MoE, 3B active; MTP; GMU 0.25 |
+| vllm-qwen36moe | 8002 | `qwen3.6-35b-a3b` | RedHatAI NVFP4; MoE, 3B active; MTP; GMU 0.25, KV cache pinned at 6 GiB |
 | vllm-ornith15-nvfp4 | 8003 | `ornith-1.5-35b-a3b` | ornith-ai modelopt NVFP4; MTP 1 draft; GMU 0.30 |
 | vllm-ornith15-agentic | 8003 | `ornith-1.5-35b-a3b` | primitive-ai NVFP4-FP8, GPTQ-calibrated on tool calls; GMU 0.30 |
 | vllm-ornith15-bf16 | 8003 | `ornith-1.5-35b-a3b` | unquantised reference, 67 GiB; GMU 0.72, runs alone |
@@ -67,10 +67,15 @@ reclaim in the window and on anything else allocating at the time. Seen on 2026-
 0.25 got between 0.3 and 1.5 GiB of KV cache across nine attempts while a 10 GB image pull was unpacking and
 `vllm-whisper` was resident, then 9.3 GiB with the same flags once whisper was stopped (it needs 3.1 GiB for its
 context length). The symptom is `ValueError: To serve at least one request with the model's max seq len`
-in a restart loop. Two ways out: avoid other memory events during a start (pulls, builds, other model
-starts), or pin the KV size with `--kv-cache-memory <bytes>` alongside `--gpu-memory-utilization`, which vLLM
-then uses only for the switchboard's sum rule. The log line `Replace gpu_memory_utilization config with
---kv-cache-memory=...` on a healthy start gives the number to pin.
+in a restart loop. It happened again on 2026-11-27 (0.3 to 1.6 GiB over ten attempts, whisper resident, no
+pull running), so `vllm-qwen36moe` now has its KV cache pinned: `--kv-cache-memory 6442450944` (6 GiB, 252,646
+tokens, about two full 131k contexts), and it started first time with that.
+
+Two ways out for any other service that shows the symptom: avoid other memory events during a start (pulls,
+builds, other model starts), or pin the KV size with `--kv-cache-memory <bytes>`. With the pin vLLM ignores
+`--gpu-memory-utilization`; keep that flag anyway, because the switchboard's sum rule reads it, and choose a
+pin so that weights + KV + a few GiB of overhead stay near GMU × 121.6. The log line `Replace
+gpu_memory_utilization config with --kv-cache-memory=...` on a healthy start gives the measured number.
 
 ## Performance (GB10)
 - Decode is bandwidth-bound (273 GB/s). Qwen3.8-27B-FP8 single-stream: ~8 tok/s stock, ~17 with MTP (3 drafts).
@@ -78,7 +83,8 @@ then uses only for the switchboard's sum rule. The log line `Replace gpu_memory_
 - Never `--enforce-eager`: ~55% throughput loss on sm_121.
 - GMU (`--gpu-memory-utilization`): gemma 0.30, ornith15 0.30 (nvfp4, agentic) or 0.72 (bf16), qwen36moe 0.25,
   qwen38 0.35 (nvfp4) or 0.45 (fp8), codernext 0.45 (nvfp4) or 0.72 (fp8), nemotron-omni 0.45, qwen35-122b 0.75.
-  vLLM sees 121.6 GiB and takes weights + ~7 GiB overhead out of GMU × that; the rest is KV cache. Keep the
+  vLLM sees 121.6 GiB and takes weights + ~7 GiB overhead out of GMU × that; the rest is KV cache (except
+  qwen36moe, whose KV cache is pinned: see Memory measurement on GB10). Keep the
   running sum under ~0.85, so a qwen38, codernext-nvfp4 or nemotron-omni runs with at most one small model and
   the 0.72+ ones run alone; the switchboard enforces this, the overview Memory tile is the check.
 - Models must start **one at a time**: two loading together each measure the shared pool while the other is still
