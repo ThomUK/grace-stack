@@ -16,6 +16,7 @@
 #   :8006  nemotron-3-nano-omni-30b-a3b vllm-nemotron-omni      nvidia FP8, 33 GiB      GMU 0.45  image + video in, reasoning
 #   :8007  qwen3.8-flash-next           vllm-qwen38flash        nvidia FP4 QAD, 95 GiB  GMU 0.80  125B-A6B MoE, vision; community b12x image; runs alone
 #   :8008  openai/whisper-large-v3-turbo vllm-whisper           openai fp16, 1.6 GiB    GMU 0.05  speech to text only; network alias `stt` for pixel-dog
+#   :8009  inkling-2-mini               vllm-inkling2mini       TML NVFP4+MXFP8, 19 GiB GMU 0.40  26B-A3.4B looped MoE, vision; vLLM nightly image
 #
 # Memory: vLLM sees 121.6 GiB. Weights + ~7 GiB of runtime overhead come out of GMU × 121.6; the rest is
 # KV cache ("Available KV cache memory" in the container log). Start models one at a time: two loading at
@@ -36,7 +37,7 @@
 #
 # Ports bind to loopback; expose with `tailscale serve`, not the LAN.
 
-x-vllm-common: &vllm-common            # everything but the image: shared by the stock services and vllm-qwen38flash
+x-vllm-common: &vllm-common            # everything but the image: shared by the stock services and the two on other images
   restart: unless-stopped
   ipc: host
   runtime: nvidia
@@ -417,8 +418,42 @@ services:
       --gpu-memory-utilization 0.05
       --limit-mm-per-prompt '{"audio": 1}'
 
+  # ---------------------------------------------------------------- :8009 inkling-2-mini (26B-A3.4B looped MoE; opt-in)
+  # Not the stock image: the Inkling2Loop architecture is in vLLM main only (0.35 at the earliest; grace/vllm is
+  # 0.31), so this runs the upstream nightly, pinned to one commit. Flags follow the vLLM recipe for DGX Spark:
+  # 262k context cap, reasoning and tool parsers, and the DSpark draft model that ships inside the checkpoint.
+  # The 12 middle layers run three passes, each with its own KV cache: ~69 KB of cache per token.
+  vllm-inkling2mini:
+    <<: *vllm-common
+    image: vllm/vllm-openai:nightly-eff4de9be3c901c6ad12cb651de64e4b10ced219   # main on 2026-11-23; pinned on purpose
+    entrypoint: []
+    profiles: [inkling2mini]
+    container_name: vllm-inkling2mini
+    ports: ["127.0.0.1:8009:8000"]
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      - vllm-cache-nightly:/root/.cache/vllm      # its own compile cache: a different vLLM build
+    labels:
+      switchboard.name: "Inkling 2 Mini"
+      switchboard.vision: "true"
+      switchboard.note: "Thinking Machines NVFP4 + MXFP8; looped MoE, 3.4B active (5.4B effective over three passes); image in; DSpark 7 drafts; vLLM nightly image"
+    command: >
+      vllm serve thinkingmachines/Inkling-2-Mini
+      --served-model-name inkling-2-mini
+      --host 0.0.0.0 --port 8000
+      --tensor-parallel-size 1
+      --max-model-len 262144
+      --max-num-seqs 4
+      --gpu-memory-utilization 0.40
+      --enable-prefix-caching
+      --speculative-config '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
+      --enable-auto-tool-choice
+      --tool-call-parser inkling
+      --reasoning-parser inkling
+
 volumes:
   vllm-cache:
+  vllm-cache-nightly:
   vllm-cache-b12x:
   flashinfer-cache-b12x:
   triton-cache-b12x:

@@ -44,7 +44,7 @@ stood in for by an existing chat model via `.env`:
 |---|---|---|
 | `PIXELDOG_STT_URL=http://stt:8000/v1` | `stt` | **done**: `vllm-whisper` in `models/compose.yml` (port 8008, profile `whisper`), with `stt` as a network alias. Whether another server beats vLLM on latency is still open |
 | `PIXELDOG_TTS_URL=http://kokoro:8880/v1` | `kokoro` | **done**: `models/kokoro/compose.yaml`, the upstream arm64 GPU image (CUDA 12.9 torch runs on GB10 with a capability warning), port 8880, always on, ~2 GiB; 6 s of speech in 0.2 s warm |
-| `PIXELDOG_DEFAULT_LLM_URL=http://vllm-voice:8000/v1` | `vllm-voice` | **interim**: `.env` overrides URL and model to any chat service here (currently `vllm-qwen36moe`, `qwen3.6-35b-a3b`); pixel-dog sends `enable_thinking: false` per request, so the vLLM flags stay as they are. A dedicated small voice model is still the plan |
+| `PIXELDOG_DEFAULT_LLM_URL=http://vllm-voice:8000/v1` | `vllm-voice` | **interim**: `.env` overrides URL and model to any chat service here (tried so far: `vllm-qwen36moe`, `vllm-qwen38flash`, `vllm-inkling2mini`); pixel-dog sends `enable_thinking: false` per request, so the vLLM flags stay as they are. Inkling 2 Mini ignores that field and thinks before each reply, which counts against the profile's `max_tokens`: see [models.md](models.md). A dedicated small voice model is still the plan |
 
 The voice set today is `vllm-qwen36moe` (GMU 0.25) + `vllm-whisper` (0.05) + `kokoro` (~2 GiB, no fraction), well inside the cap, so nothing else needed lowering; a dedicated voice LLM may change that; record
 the chosen values in [models.md](models.md) when they land. Until then `echo` and `fake` work with nothing else

@@ -32,6 +32,8 @@ scrape_configs:
         labels: { service: vllm-qwen38flash }
       - targets: [vllm-whisper:8000]
         labels: { service: vllm-whisper }
+      - targets: [vllm-inkling2mini:8000]
+        labels: { service: vllm-inkling2mini }
 
   - job_name: dcgm
     static_configs:
